@@ -52,7 +52,7 @@ STOCK_FILE = "stocks.json"
 SUGGESTION_FILE = "suggestions.json"
 TRIVIA_STATS_FILE = "trivia_stats.json"
 TRIVIA_STREAKS_FILE = "trivia_streaks.json"
-
+BEG_STATS_FILE = "beg_stats.json"
 
 ANNOUNCEMENT_CHANNEL_ID = 1433248053665726547
 WELCOME_CHANNEL_ID = 1433248053665726546
@@ -136,13 +136,6 @@ snakeLoose = "😵"
 # =========================
 # Minecraft (!mc)
 # =========================
-# Optional (for direct Java ping):
-#   pip install mcstatus
-#
-# This implementation:
-# - Shows a clean player-facing embed (no confusing backend IP/ports)
-# - Tries mcstatus first (best), then falls back to mcsrvstat.us (SRV/proxy friendly)
-# - Does NOT force a port (SRV handles it) and does NOT display resolved backend endpoints
 
 MC_NAME = "QMUL Survival"
 MC_ADDRESS = "qmul-survival.modrinth.gg"
@@ -458,6 +451,13 @@ def load_stocks():
     if changed:
         save_stocks(fixed)
     return fixed
+
+def load_beg_stats():
+    return _load_json(BEG_STATS_FILE, {})
+
+
+def save_beg_stats(d):
+    _save_json(BEG_STATS_FILE, d)
 
 # =========================
 # Snake (reaction + command controls)
@@ -1324,23 +1324,114 @@ async def daily(ctx):
 
     await ctx.send(embed=discord.Embed(description=f"💰 Daily claimed: **{reward}** coins!", color=discord.Color.purple()))
 
-@bot.command(name="beg", help="Beg for coins (random outcome).")
+@bot.command(name="beg", help="Beg for coins (scales with begging experience, has cooldown).")
 async def beg(ctx):
     uid = str(ctx.author.id)
+
     coins = ensure_user_coins(uid)
     data = coins[uid]
+
+    # ---- Cooldown (30 seconds) ----
+    now = time.time()
+    cooldown = 30
+    last_beg = data.get("last_beg", 0)
+
+    if now - last_beg < cooldown:
+        remaining = int(cooldown - (now - last_beg))
+        return await ctx.send(f"⏳ You must wait **{remaining}s** before begging again.")
+
+    # ---- Load begging XP ----
+    beg_stats = load_beg_stats()
+    user_beg = beg_stats.setdefault(uid, {"xp": 0, "level": 1, "total_begs": 0})
+
+    # ---- Calculate level ----
+    user_beg["level"] = int((user_beg["xp"] ** 0.5) // 5 + 1)
+
+    # ---- Reward scales with level ----
+    base_min = 10 + user_beg["level"] * 2
+    base_max = 30 + user_beg["level"] * 5
+    amount = random.randint(base_min, base_max)
+
     responses = [
-        ("A kind stranger gave you", random.randint(20, 50)),
-        ("Your sob story worked. You received", random.randint(30, 70)),
-        ("You found coins on the floor:", random.randint(10, 30)),
-        ("No one cared... but someone dropped", random.randint(5, 15)),
-        ("A rich NPC tipped you", random.randint(50, 100)),
+        "A kind stranger gave you",
+        "Your sob story worked. You received",
+        "You found coins on the floor:",
+        "Someone felt bad and handed you",
+        "A rich NPC tipped you",
     ]
-    msg, amount = random.choice(responses)
+
+    msg = random.choice(responses)
+
+    # ---- Apply reward ----
     data["wallet"] += amount
+    data["last_beg"] = now
+
+    # ---- Gain begging XP ----
+    xp_gain = random.randint(5, 12)
+    user_beg["xp"] += xp_gain
+    user_beg["total_begs"] += 1
+
     save_coins(coins)
-    await ctx.send(embed=discord.Embed(description=f"🙏 {msg} **{amount}** coins!", color=discord.Color.orange()))
-    await ctx.send(f"💸 Feeling generous? Use `!donate {ctx.author.mention} <amount>` to help them out even more.")
+    save_beg_stats(beg_stats)
+
+    embed = discord.Embed(
+        title="🙏 Successful Beg",
+        description=(
+            f"{msg} **{amount}** coins!\n\n"
+            f"📈 Beg Level: **{user_beg['level']}** | Total Begs: **{user_beg['total_begs']}**\n"
+            f"✨ XP Gained: **+{xp_gain}**"
+        ),
+        color=discord.Color.orange(),
+    )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="begleaderboard", help="Show top beggars in the server.")
+async def begleaderboard(ctx, count: int = 10):
+    count = max(3, min(25, count))
+
+    beg_stats = load_beg_stats()
+    guild = ctx.guild
+
+    entries = []
+
+    for member in guild.members:
+        if member.bot:
+            continue
+
+        stats = beg_stats.get(str(member.id))
+        if not stats:
+            continue
+
+        level = int(stats.get("level", 1))
+        xp = int(stats.get("xp", 0))
+        begs = int(stats.get("total_begs", 0))
+
+        entries.append((member, level, xp, begs))
+
+    if not entries:
+        return await ctx.send("📭 No begging data yet.")
+
+    # Sort by level → xp → total begs
+    entries.sort(key=lambda x: (x[1], x[2], x[3]), reverse=True)
+
+    lines = []
+    for i, (member, level, xp, begs) in enumerate(entries[:count], start=1):
+        crown = " 👑" if i == 1 else ""
+        you = " ← you" if member.id == ctx.author.id else ""
+
+        lines.append(
+            f"**{i}.** {member.mention}{crown} — "
+            f"Lvl **{level}** · {xp} XP · {begs} begs{you}"
+        )
+
+    embed = discord.Embed(
+        title="🏆 Begging Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+    )
+
+    await ctx.send(embed=embed)
 
 @bot.command(name="donate", help="Donate coins to someone.")
 async def donate(ctx, member: discord.Member, amount: int):
