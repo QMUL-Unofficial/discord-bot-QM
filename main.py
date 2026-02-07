@@ -1049,7 +1049,6 @@ async def insult(ctx, member: discord.Member):
         "I hope love never finds ur fugly ahh",
         "Fuckkk 🐺...",
         "flippin Malteser",
-        "Fuck you, you ho. Come and say to my face, I'll fuck you in the ass in front of everybody. You bitch.",
         "Whoever's willing to fuck you is just too lazy to jerk off.",
         "God just be making anyone",
         "You should have been a blowjob"
