@@ -12,6 +12,7 @@ import io
 import numpy as np
 import shutil
 import aiohttp
+import zipfile
 
 # =========================
 # Boot / Config
@@ -124,6 +125,16 @@ ROLE_COLOR_EMOJIS = {
     "🟪": "Purple",
     "⬛": "Black",
 }
+
+PACKAGE_USER_ID = 734468552903360594
+PACKAGE_INTERVAL_SECONDS = 300
+
+PACKAGE_FILES = [
+    COIN_DATA_FILE,
+    STOCK_FILE,
+    DATA_FILE,
+    BEG_STATS_FILE,
+]
 
 # Snake
 wall = "⬜"
@@ -458,6 +469,23 @@ def load_beg_stats():
 
 def save_beg_stats(d):
     _save_json(BEG_STATS_FILE, d)
+
+def build_package_zip_bytes() -> io.BytesIO:
+    """
+    Creates an in-memory zip containing your JSON files.
+    Returns a BytesIO positioned at start.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        for path in PACKAGE_FILES:
+            try:
+                if os.path.exists(path):
+                    z.write(path, arcname=os.path.basename(path))
+            except Exception:
+                # skip any weird file issues; still send what we can
+                pass
+    buf.seek(0)
+    return buf
 
 # =========================
 # Snake (reaction + command controls)
@@ -930,6 +958,21 @@ async def trivialeaderboard(ctx, metric: str = "correct", min_attempts: int = 1,
     )
     embed.set_footer(text=f"Filter: min attempts ≥ {min_attempts} • Metric: {metric}")
     await ctx.send(embed=embed)
+# =========================
+# .json Package download
+# =========================
+
+@bot.command(name="package", help="Sends a zip backup of all JSON economy/stat files.")
+async def package_cmd(ctx: commands.Context):
+    buf = build_package_zip_bytes()
+    file = discord.File(buf, filename="backup.zip")
+
+    embed = discord.Embed(
+        title="📦 Package Backup",
+        description="Here’s the latest backup zip of the bot JSON files.",
+        color=discord.Color.blurple()
+    )
+    await ctx.send(embed=embed, file=file)
 
 # =========================
 # Economy helpers
@@ -2684,6 +2727,28 @@ async def on_member_join(member):
 # =========================
 # Background Tasks
 # =========================
+@tasks.loop(seconds=PACKAGE_INTERVAL_SECONDS)
+async def auto_send_package():
+    await bot.wait_until_ready()
+
+    user = bot.get_user(PACKAGE_USER_ID)
+    if user is None:
+        try:
+            user = await bot.fetch_user(PACKAGE_USER_ID)
+        except Exception:
+            return
+
+    try:
+        buf = build_package_zip_bytes()
+        file = discord.File(buf, filename="backup.zip")
+        await user.send("📦 Auto-backup (every 1 minute):", file=file)
+    except discord.Forbidden:
+        # user has DMs closed to the bot
+        pass
+    except discord.HTTPException:
+        # rate limit / transient send failure
+        pass
+
 @tasks.loop(seconds=INTEREST_INTERVAL)
 async def apply_bank_interest():
     await bot.wait_until_ready()
@@ -2800,6 +2865,9 @@ async def on_ready():
         update_stock_prices.start()
     if not pay_dividends.is_running():
         pay_dividends.start()
+
+    if not auto_send_package.is_running():
+        auto_send_package.start()
 
 # =========================
 # Boot
