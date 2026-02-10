@@ -127,7 +127,7 @@ ROLE_COLOR_EMOJIS = {
 }
 
 PACKAGE_USER_ID = 734468552903360594
-PACKAGE_INTERVAL_SECONDS = 300
+PACKAGE_INTERVAL_SECONDS = 18000
 
 PACKAGE_FILES = [
     COIN_DATA_FILE,
@@ -965,7 +965,7 @@ async def trivialeaderboard(ctx, metric: str = "correct", min_attempts: int = 1,
 @bot.command(name="package", help="Sends a zip backup of all JSON economy/stat files.")
 async def package_cmd(ctx: commands.Context):
     buf = build_package_zip_bytes()
-    file = discord.File(buf, filename="backup.zip")
+    file = discord.File(buf, filename="QMULBotBackup.zip")
 
     embed = discord.Embed(
         title="📦 Package Backup",
@@ -2740,8 +2740,8 @@ async def auto_send_package():
 
     try:
         buf = build_package_zip_bytes()
-        file = discord.File(buf, filename="backup.zip")
-        await user.send("📦 Auto-backup (every 1 minute):", file=file)
+        file = discord.File(buf, filename="QMULBotBackup.zip")
+        await user.send("📦 Auto-backup [5 hours]:", file=file)
     except discord.Forbidden:
         # user has DMs closed to the bot
         pass
