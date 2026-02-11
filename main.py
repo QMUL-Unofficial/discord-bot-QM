@@ -134,6 +134,7 @@ PACKAGE_FILES = [
     STOCK_FILE,
     DATA_FILE,
     BEG_STATS_FILE,
+    TRIVIA_STATS_FILE,
 ]
 
 # Snake
