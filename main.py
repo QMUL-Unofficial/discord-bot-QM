@@ -717,7 +717,7 @@ async def table(ctx: commands.Context):
     embed = discord.Embed(title="🕌 Ramadan Times (Today)", description=desc, color=discord.Color.gold())
     await ctx.send(embed=embed)
 
-@bot.command(name="prayer", help="Show today's BIC jama'ah prayer times + current/next prayer.")
+@bot.command(name="prayer", help="Show today's jama'ah prayer times + current/next prayer.")
 async def prayer(ctx: commands.Context):
     try:
         cfg = load_ramadan_config()  # uses bic_ramadan_2026.json
@@ -730,7 +730,7 @@ async def prayer(ctx: commands.Context):
 
     entry = (cfg.get("days") or {}).get(today_key)
     if not entry:
-        return await ctx.send("❌ No timetable entry found for today in `bic_ramadan_2026.json`.")
+        return await ctx.send("❌ No timetable entry found for today.")
 
     # --- helpers ---
     def normalize_hhmm(hhmm: str) -> str:
@@ -810,7 +810,7 @@ async def prayer(ctx: commands.Context):
 
     # Build display lines
     pretty_date = entry.get("pretty_date", today_key)
-    masjid = cfg.get("masjid_name", "Todays")
+    masjid = cfg.get("masjid_name", "")
 
     lines = []
     for name, _d, hhmm in dt:
