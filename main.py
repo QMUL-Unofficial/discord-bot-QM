@@ -157,11 +157,6 @@ snakeHead = "😍"
 snakeBody = "🟨"
 snakeLoose = "😵"
 
-PRAYER_LAT = 51.652
-PRAYER_LON = -0.200
-PRAYER_METHOD = 3        # MWL (common in UK)
-PRAYER_TIMEZONE = "Europe/London"
-
 # =========================
 # Minecraft (!mc)
 # =========================
@@ -559,45 +554,6 @@ def load_beg_stats():
 def save_beg_stats(d):
     _save_json(BEG_STATS_FILE, d)
 
-async def fetch_prayer_times_today(lat: float, lon: float, tz_name: str, method: int, school: int):
-    """
-    Returns dict: {"Fajr":"HH:MM", "Dhuhr":"HH:MM", "Asr":"HH:MM", "Maghrib":"HH:MM", "Isha":"HH:MM"}
-    """
-    tz = ZoneInfo(tz_name)
-    now_local = datetime.now(tz)
-    date_str = now_local.strftime("%d-%m-%Y")
-
-    url = "https://api.aladhan.com/v1/timings"
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "method": method,
-        "school": school,
-        "date": date_str,
-        # "tune": "0,0,0,0,0,0,0,0,0"  # optional tuning string if you ever need
-    }
-
-    timeout = aiohttp.ClientTimeout(total=8)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, params=params) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"Prayer API error HTTP {resp.status}")
-            data = await resp.json()
-
-    timings = data["data"]["timings"]
-
-    # Some APIs include suffixes like "05:12 (GMT)" - keep just HH:MM
-    def clean(t):
-        return str(t).split(" ")[0].strip()
-
-    return {
-        "Fajr": clean(timings["Fajr"]),
-        "Dhuhr": clean(timings["Dhuhr"]),
-        "Asr": clean(timings["Asr"]),
-        "Maghrib": clean(timings["Maghrib"]),
-        "Isha": clean(timings["Isha"]),
-    }
-
 # =========================
 # Ramadan Timetable Addon (JSON-driven)
 # =========================
@@ -745,65 +701,122 @@ async def table(ctx: commands.Context):
     embed = discord.Embed(title="🕌 Ramadan Times (Today)", description=desc, color=discord.Color.gold())
     await ctx.send(embed=embed)
 
-@bot.command(name="prayer", help="Show today's 5 prayer times + current prayer window + next prayer.")
+@bot.command(name="prayer", help="Show today's BIC jama'ah prayer times + current/next prayer.")
 async def prayer(ctx: commands.Context):
-    # --- Hardcoded Barnet (approx) + London TZ + MWL method ---
-    PRAYER_LAT = 51.652
-    PRAYER_LON = -0.200
-    PRAYER_METHOD = 3  # MWL
-    TZ_NAME = "Europe/London"
-
-    tz = ZoneInfo(TZ_NAME)
-    now_local = datetime.now(tz)
-    date_str = now_local.strftime("%d-%m-%Y")
-
-    # Fetch timings from AlAdhan
-    url = "https://api.aladhan.com/v1/timings"
-    params = {
-        "latitude": PRAYER_LAT,
-        "longitude": PRAYER_LON,
-        "method": PRAYER_METHOD,
-        "date": date_str,
-    }
-
     try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, params=params) as resp:
-                if resp.status != 200:
-                    return await ctx.send(f"❌ Couldn’t fetch prayer times (HTTP {resp.status}).")
-                data = await resp.json()
+        cfg = load_ramadan_config()  # uses bic_ramadan_2026.json
     except Exception as e:
-        # show the real error so we can diagnose next time
-        return await ctx.send(f"❌ Couldn’t fetch prayer times right now.\n**Error:** `{type(e).__name__}: {e}`")
+        return await ctx.send(f"❌ Couldn't load timetable JSON. `{type(e).__name__}: {e}`")
 
-    timings = data["data"]["timings"]
+    tz = ZoneInfo(cfg.get("timezone", "Europe/London"))
+    now = datetime.now(tz)
+    today_key = now.date().isoformat()
 
-    def clean(t):
-        # sometimes returns "05:12 (GMT)" -> keep "05:12"
-        return str(t).split(" ")[0].strip()
+    entry = (cfg.get("days") or {}).get(today_key)
+    if not entry:
+        return await ctx.send("❌ No timetable entry found for today in `bic_ramadan_2026.json`.")
 
-    # 5 daily prayers only
-    times = {
-        "Fajr": clean(timings["Fajr"]),
-        "Dhuhr": clean(timings["Dhuhr"]),
-        "Asr": clean(timings["Asr"]),
-        "Maghrib": clean(timings["Maghrib"]),
-        "Isha": clean(timings["Isha"]),
-    }
-
-    # Build local datetimes for comparison
-    today = now_local.date()
+    # --- helpers ---
+    def normalize_hhmm(hhmm: str) -> str:
+        # file has "5:31" sometimes; convert to "05:31"
+        hhmm = str(hhmm).strip()
+        if ":" not in hhmm:
+            return hhmm
+        h, m = hhmm.split(":")
+        return f"{int(h):02d}:{int(m):02d}"
 
     def to_dt(hhmm: str) -> datetime:
+        hhmm = normalize_hhmm(hhmm)
         h, m = hhmm.split(":")
-        return datetime(today.year, today.month, today.day, int(h), int(m), tzinfo=tz)
+        return datetime(
+            now.year, now.month, now.day,
+            int(h), int(m), 0,
+            tzinfo=tz
+        )
 
-    order = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]
-    dt = {k: to_dt(v) for k, v in times.items()}
+    def human_left(seconds: int) -> str:
+        seconds = max(0, int(seconds))
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        if h:
+            return f"{h}h {m}m"
+        return f"{m}m"
 
-    # Determine current window + next pra
+    # --- 5 daily prayers from BIC jama'ah times ---
+    prayers = [
+        ("Fajr",      entry.get("fajr_jamaah")),
+        ("Zuhr",      entry.get("zuhr_jamaah")),
+        ("Asr",       entry.get("asr_jamaah")),
+        ("Maghrib",   entry.get("maghrib_jamaah")),
+        ("Isha",      entry.get("isha_jamaah")),
+    ]
 
+    # Ensure all exist
+    missing = [name for name, t in prayers if not t]
+    if missing:
+        return await ctx.send(f"❌ Missing times in JSON for today: {', '.join(missing)}")
+
+    # Build datetimes
+    dt = [(name, to_dt(t), normalize_hhmm(t)) for name, t in prayers]
+    dt.sort(key=lambda x: x[1])
+
+    # Determine current + next (based on jama'ah times)
+    # If before first prayer -> "Before Fajr", next = Fajr
+    if now < dt[0][1]:
+        current_label = "Before Fajr"
+        next_name, next_dt, next_hhmm = dt[0]
+    # If after last prayer -> "After Isha", next = tomorrow Fajr (if exists in file)
+    elif now >= dt[-1][1]:
+        current_label = "After Isha"
+        # try tomorrow fajr from json
+        tomorrow_key = (now.date() + timedelta(days=1)).isoformat()
+        tomorrow_entry = (cfg.get("days") or {}).get(tomorrow_key)
+        if tomorrow_entry and tomorrow_entry.get("fajr_jamaah"):
+            next_name = "Fajr"
+            next_hhmm = normalize_hhmm(tomorrow_entry["fajr_jamaah"])
+            h, m = next_hhmm.split(":")
+            next_dt = datetime(
+                now.year, now.month, now.day,
+                int(h), int(m), 0, tzinfo=tz
+            ) + timedelta(days=1)
+        else:
+            # fallback: just show "tomorrow" without exact countdown
+            next_name, next_dt, next_hhmm = "Fajr", None, None
+    else:
+        # Find window: dt[i] <= now < dt[i+1]
+        current_label = "Between prayers"
+        next_name, next_dt, next_hhmm = dt[-1][0], dt[-1][1], dt[-1][2]  # default
+        for i in range(len(dt) - 1):
+            if dt[i][1] <= now < dt[i + 1][1]:
+                current_label = f"{dt[i][0]} time"
+                next_name, next_dt, next_hhmm = dt[i + 1]
+                break
+
+    # Build display lines
+    pretty_date = entry.get("pretty_date", today_key)
+    masjid = cfg.get("masjid_name", "Barnet Islamic Centre (BIC)")
+
+    lines = []
+    for name, _d, hhmm in dt:
+        mark = "🟢" if current_label.startswith(name) else "🕌"
+        lines.append(f"{mark} **{name}:** `{hhmm}`")
+
+    embed = discord.Embed(
+        title=f"🕌 {masjid} — Prayer Times",
+        description=f"**{pretty_date}**\n\n" + "\n".join(lines),
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="🕰️ Now", value=f"`{now.strftime('%H:%M')}`", inline=True)
+    embed.add_field(name="Current", value=f"**{current_label}**", inline=True)
+
+    if next_dt is not None:
+        left = human_left((next_dt - now).total_seconds())
+        embed.add_field(name="Next", value=f"**{next_name}** at `{next_hhmm}` (in **{left}**)", inline=False)
+    else:
+        embed.add_field(name="Next", value="**Fajr** (tomorrow) — not found in JSON", inline=False)
+
+    await ctx.send(embed=embed)
+    
 # =========================
 # Snake (reaction + command controls)
 # =========================
