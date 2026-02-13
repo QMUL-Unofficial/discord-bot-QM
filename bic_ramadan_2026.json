@@ -10,53 +10,53 @@
   },
   "days": {
     "2026-02-13": {
-  "pretty_date": "Fri 13 Feb",
-  "ramadan_day": null,
-  "suhur_ends": "5:38",
-  "fajr_jamaah": "5:58",
-  "zuhr_jamaah": "1:00",
-  "asr_jamaah": "3:45",
-  "iftar_time": "5:15",
-  "maghrib_jamaah": "5:22",
-  "isha_jamaah": "7:30",
-  "taraweeh": "7:30"
-},
-"2026-02-14": {
-  "pretty_date": "Sat 14 Feb",
-  "ramadan_day": null,
-  "suhur_ends": "5:36",
-  "fajr_jamaah": "5:56",
-  "zuhr_jamaah": "12:45",
-  "asr_jamaah": "3:45",
-  "iftar_time": "5:17",
-  "maghrib_jamaah": "5:24",
-  "isha_jamaah": "7:30",
-  "taraweeh": "7:30"
-},
-"2026-02-15": {
-  "pretty_date": "Sun 15 Feb",
-  "ramadan_day": null,
-  "suhur_ends": "5:35",
-  "fajr_jamaah": "5:55",
-  "zuhr_jamaah": "12:45",
-  "asr_jamaah": "3:45",
-  "iftar_time": "5:19",
-  "maghrib_jamaah": "5:26",
-  "isha_jamaah": "7:30",
-  "taraweeh": "7:30"
-},
-"2026-02-16": {
-  "pretty_date": "Mon 16 Feb",
-  "ramadan_day": null,
-  "suhur_ends": "5:33",
-  "fajr_jamaah": "5:53",
-  "zuhr_jamaah": "12:45",
-  "asr_jamaah": "3:45",
-  "iftar_time": "5:21",
-  "maghrib_jamaah": "5:28",
-  "isha_jamaah": "7:30",
-  "taraweeh": "7:30"
-}
+      "pretty_date": "Fri 13 Feb",
+      "ramadan_day": null,
+      "suhur_ends": "5:38",
+      "fajr_jamaah": "5:58",
+      "zuhr_jamaah": "1:00",
+      "asr_jamaah": "3:45",
+      "iftar_time": "5:15",
+      "maghrib_jamaah": "5:22",
+      "isha_jamaah": "7:30",
+      "taraweeh": "7:30"
+    },
+    "2026-02-14": {
+      "pretty_date": "Sat 14 Feb",
+      "ramadan_day": null,
+      "suhur_ends": "5:36",
+      "fajr_jamaah": "5:56",
+      "zuhr_jamaah": "12:45",
+      "asr_jamaah": "3:45",
+      "iftar_time": "5:17",
+      "maghrib_jamaah": "5:24",
+      "isha_jamaah": "7:30",
+      "taraweeh": "7:30"
+    },
+    "2026-02-15": {
+      "pretty_date": "Sun 15 Feb",
+      "ramadan_day": null,
+      "suhur_ends": "5:35",
+      "fajr_jamaah": "5:55",
+      "zuhr_jamaah": "12:45",
+      "asr_jamaah": "3:45",
+      "iftar_time": "5:19",
+      "maghrib_jamaah": "5:26",
+      "isha_jamaah": "7:30",
+      "taraweeh": "7:30"
+    },
+    "2026-02-16": {
+      "pretty_date": "Mon 16 Feb",
+      "ramadan_day": null,
+      "suhur_ends": "5:33",
+      "fajr_jamaah": "5:53",
+      "zuhr_jamaah": "12:45",
+      "asr_jamaah": "3:45",
+      "iftar_time": "5:21",
+      "maghrib_jamaah": "5:28",
+      "isha_jamaah": "7:30",
+      "taraweeh": "7:30"
+    }
     "2026-02-17": { "pretty_date": "Tue 17 Feb", "ramadan_day": null, "suhur_ends": "5:31", "fajr_jamaah": "5:51", "zuhr_jamaah": "12:45", "asr_jamaah": "3:45", "iftar_time": "5:22", "maghrib_jamaah": "5:29", "isha_jamaah": "7:45", "taraweeh": "7:45" },
     "2026-02-18": { "pretty_date": "Wed 18 Feb", "ramadan_day": null, "suhur_ends": "5:29", "fajr_jamaah": "5:49", "zuhr_jamaah": "12:45", "asr_jamaah": "4:00", "iftar_time": "5:24", "maghrib_jamaah": "5:29", "isha_jamaah": "7:45", "taraweeh": "7:45" },
 
