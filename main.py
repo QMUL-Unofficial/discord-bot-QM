@@ -59,7 +59,8 @@ BEG_STATS_FILE = "beg_stats.json"
 # =========================
 # Ramadan Timetable Addon (BIC)
 # =========================
-BIC_RAMADAN_JSON = "bic_ramadan_2026.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BIC_RAMADAN_JSON = os.path.join(BASE_DIR, "bic_ramadan_2026.json")
 RAMADAN_STATE_FILE = "ramadan_state.json"
 BIC_POST_CHANNEL_ID = 1471992400351334626  # posts here
 BIC_TIMEZONE = "Europe/London"
@@ -572,10 +573,25 @@ def _save_json_file(path: str, obj):
         json.dump(obj, f, indent=2, ensure_ascii=False)
 
 def load_ramadan_config():
+    print("[Ramadan] Loading JSON from:", BIC_RAMADAN_JSON)
     data = _load_json_file(BIC_RAMADAN_JSON, {})
     if not data or "days" not in data:
         raise RuntimeError(f"Missing or invalid {BIC_RAMADAN_JSON}")
     return data
+
+def _load_json_file(path: str, default):
+    if not os.path.exists(path):
+        print("[Ramadan] File not found:", path)
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print("[Ramadan] JSON decode error:", e)
+        return default
+    except Exception as e:
+        print("[Ramadan] Error reading file:", type(e).__name__, e)
+        return default
 
 def load_ramadan_state():
     return _load_json_file(RAMADAN_STATE_FILE, {"sent": {}, "last_daily_post": ""})
