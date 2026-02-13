@@ -2987,41 +2987,47 @@ async def baltop(ctx, count: int = 10):
 # =========================
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
+    if message.author.bot:
         return
 
-    # ===== Word filter: "pathical" =====
-    if "pathical" in message.content.lower():
+    # ===== Word filter: "pathical" (only in guild channels, not DMs) =====
+    if message.guild and "pathical" in message.content.lower():
         try:
             await message.delete()
         except discord.Forbidden:
-            pass  # bot can't delete messages
-
+            pass
         await message.channel.send(
             f"{message.author.mention} stop being a bum 😭",
             delete_after=5
         )
         return  # stop further processing
 
-    key = f"{message.guild.id}-{message.author.id}"
-    if key in AFK_STATUS:
-        del AFK_STATUS[key]
-        await message.channel.send(embed=discord.Embed(
-            description=f"{message.author.mention} is no longer AFK.",
-            color=discord.Color.red()
-        ))
-
-    for user in message.mentions:
-        mention_key = f"{message.guild.id}-{user.id}"
-        if mention_key in AFK_STATUS:
-            reason = AFK_STATUS[mention_key]
+    # ===== AFK + XP should only run in guilds =====
+    if message.guild:
+        key = f"{message.guild.id}-{message.author.id}"
+        if key in AFK_STATUS:
+            del AFK_STATUS[key]
             await message.channel.send(embed=discord.Embed(
-                description=f"{user.display_name} is currently AFK: {reason}",
-                color=discord.Color.purple()
+                description=f"{message.author.mention} is no longer AFK.",
+                color=discord.Color.red()
             ))
 
-    await update_xp(message.author.id, message.guild.id, XP_PER_MESSAGE)
+        for user in message.mentions:
+            mention_key = f"{message.guild.id}-{user.id}"
+            if mention_key in AFK_STATUS:
+                reason = AFK_STATUS[mention_key]
+                await message.channel.send(embed=discord.Embed(
+                    description=f"{user.display_name} is currently AFK: {reason}",
+                    color=discord.Color.purple()
+                ))
 
+        # Don’t let XP errors block commands
+        try:
+            await update_xp(message.author.id, message.guild.id, XP_PER_MESSAGE)
+        except Exception as e:
+            print(f"[XP] update_xp failed: {type(e).__name__}: {e}")
+
+    # ✅ ALWAYS process commands (guilds + DMs)
     await bot.process_commands(message)
 
 @bot.event
