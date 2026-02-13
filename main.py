@@ -13,6 +13,7 @@ import numpy as np
 import shutil
 import aiohttp
 from zoneinfo import ZoneInfo
+import zipfile
 
 # =========================
 # Boot / Config
@@ -76,6 +77,19 @@ INTEREST_INTERVAL = 3600      # hourly
 DIVIDEND_RATE = 0.01          # 1% portfolio value
 DIVIDEND_INTERVAL = 86400     # daily
 XP_PER_MESSAGE = 10
+
+# Zip Filing
+PACKAGE_USER_ID = 734468552903360594
+
+# Files to include in the zip (only if they exist)
+PACKAGE_FILES = [
+    "data.json",
+    "coins.json",
+    "trivia_stats.json",
+    "beg_stats.json",
+    "prayer_notif_state.json",
+    "ramadan_post_state.json",
+]
 
 # Economy / Items
 SHOP_ITEMS = ["Anime body pillow", "Oreo plush", "Rtx5090", "Crash token", "Imran's nose"]
@@ -352,6 +366,59 @@ async def mc(ctx: commands.Context):
 # =========================
 # Utilities: File I/O
 # =========================
+
+def _existing_files(paths: list[str]) -> list[str]:
+    return [p for p in paths if p and os.path.exists(p) and os.path.isfile(p)]
+
+async def build_data_zip_bytes() -> tuple[io.BytesIO, list[str]]:
+    """
+    Returns (zip_buffer, included_files). Uses in-memory zip.
+    """
+    included = _existing_files(PACKAGE_FILES)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        # Put files under a folder name inside the zip for tidiness
+        for path in included:
+            arcname = f"bot_backup/{os.path.basename(path)}"
+            z.write(path, arcname=arcname)
+    buf.seek(0)
+    return buf, included
+
+async def dm_package_to_user(user_id: int, *, reason: str = "Scheduled backup"):
+    """
+    Builds the zip and DMs it to the given user_id.
+    """
+    try:
+        user = await bot.fetch_user(int(user_id))
+    except Exception as e:
+        print(f"[Package] Failed to fetch user {user_id}: {e}")
+        return False
+
+    try:
+        zip_buf, included = await build_data_zip_bytes()
+        if not included:
+            await user.send(f"⚠️ Backup attempt ({reason}) — no files found to package.")
+            return True
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_UTC")
+        file = discord.File(zip_buf, filename=f"qmul_bot_backup_{ts}.zip")
+
+        msg = (
+            f"📦 **Bot Backup** ({reason})\n"
+            f"Included: {', '.join(os.path.basename(x) for x in included)}"
+        )
+        await user.send(content=msg, file=file)
+        print(f"[Package] Sent backup zip to {user_id} ({len(included)} files).")
+        return True
+
+    except discord.Forbidden:
+        print(f"[Package] DM failed: user {user_id} has DMs closed or bot blocked.")
+        return False
+    except Exception as e:
+        print(f"[Package] Error building/sending zip: {e}")
+        return False
+
 def _load_json(path, default):
     if not os.path.exists(path):
         return default
@@ -1278,6 +1345,21 @@ async def compliment(ctx, member: discord.Member):
 
     chosen = random.choice(compliments)
     await ctx.send(f"{ctx.author.mention} compliments {member.mention}:\n> {chosen}")
+
+# =========================
+# Manual command: !package
+# =========================
+@bot.command(name="package", help="DM the latest data backup zip to the package user.")
+async def package_cmd(ctx):
+    # lock this down: only allow the target user OR admins
+    if ctx.author.id != PACKAGE_USER_ID and not ctx.author.guild_permissions.administrator:
+        return await ctx.send("❌ You don’t have permission to use this command.")
+
+    ok = await dm_package_to_user(PACKAGE_USER_ID, reason=f"Manual !package by {ctx.author} ({ctx.author.id})")
+    if ok:
+        await ctx.send("✅ Backup zip sent via DM.")
+    else:
+        await ctx.send("⚠️ Tried to DM the backup, but it failed (DMs closed / blocked / error).")
 
 @bot.command(
     name="leaderboard",
@@ -2946,6 +3028,21 @@ async def pay_dividends():
         channel = bot.get_channel(MARKET_ANNOUNCE_CHANNEL_ID)
         if channel:
             await channel.send("💸 Dividends have been paid out to all shareholders!")
+
+# =========================
+# Scheduled task (every 5 hours)
+# =========================
+@tasks.loop(hours=5)
+async def send_backup_zip_every_5h():
+    await bot.wait_until_ready()
+    await dm_package_to_user(PACKAGE_USER_ID, reason="Every 5 hours")
+
+# Optional: make it run soon after startup instead of waiting 5 hours
+@send_backup_zip_every_5h.before_loop
+async def _before_send_backup_zip_every_5h():
+    await bot.wait_until_ready()
+    # send once on boot (comment out if you don't want that)
+    await dm_package_to_user(PACKAGE_USER_ID, reason="Bot started")
 
 # =========================
 # Ready
