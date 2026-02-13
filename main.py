@@ -12,7 +12,8 @@ import io
 import numpy as np
 import shutil
 import aiohttp
-import zipfile
+from zoneinfo import ZoneInfo
+import re
 
 # =========================
 # Boot / Config
@@ -126,17 +127,6 @@ ROLE_COLOR_EMOJIS = {
     "⬛": "Black",
 }
 
-PACKAGE_USER_ID = 734468552903360594
-PACKAGE_INTERVAL_SECONDS = 18000
-
-PACKAGE_FILES = [
-    COIN_DATA_FILE,
-    STOCK_FILE,
-    DATA_FILE,
-    BEG_STATS_FILE,
-    TRIVIA_STATS_FILE,
-]
-
 # Snake
 wall = "⬜"
 innerWall = "⬛"
@@ -177,6 +167,18 @@ MC_NOTES = [
 # Bedrock info disabled for clean UX (enable only if you truly want Bedrock join instructions shown)
 MC_SHOW_BEDROCK = False
 MC_BEDROCK_PORT = 22165  # display-only if MC_SHOW_BEDROCK=True
+
+LONDON_TZ = ZoneInfo("Europe/London")
+
+PRAYER_UPDATES_CHANNEL_ID = 1471992400351334626  # <-- your channel
+
+# You pasted this URL truncated; keep it as-is if it works, but you likely need the full IDMF value.
+RAMADAN_TIMETABLE_IMAGE_URL = "https://www.eastlondonmosque.org.uk/Handlers/GetImage.ashx?IDMF=563cffb2-14c6-4a1f-a94f-"
+
+ELM_PRAYER_TEST_URL = "https://www.eastlondonmosque.org.uk/prayer-times-test"
+
+PRAYER_NOTIF_STATE_FILE = "prayer_notif_state.json"   # remembers what we've already notified today
+RAMADAN_POST_STATE_FILE  = "ramadan_post_state.json"  # remembers if we already posted today's iftar update
 
 
 class MCLinksView(discord.ui.View):
@@ -471,22 +473,107 @@ def load_beg_stats():
 def save_beg_stats(d):
     _save_json(BEG_STATS_FILE, d)
 
-def build_package_zip_bytes() -> io.BytesIO:
+import re
+
+def _load_state(path: str, default: dict):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def _save_state(path: str, obj: dict):
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2)
+
+async def fetch_elm_today():
     """
-    Creates an in-memory zip containing your JSON files.
-    Returns a BytesIO positioned at start.
+    Scrape https://www.eastlondonmosque.org.uk/prayer-times-test and extract today's row.
+    Row format (observed):
+    DD/MM/YYYY Hijri Sunrise FajrBeg FajrJam ZuhrBeg ZuhrJam AsrBeg AsrJam MagBeg MagJam IshaBeg IshaJam
     """
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
-        for path in PACKAGE_FILES:
-            try:
-                if os.path.exists(path):
-                    z.write(path, arcname=os.path.basename(path))
-            except Exception:
-                # skip any weird file issues; still send what we can
-                pass
-    buf.seek(0)
-    return buf
+    today = datetime.now(LONDON_TZ).strftime("%d/%m/%Y")
+
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(ELM_PRAYER_TEST_URL) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"ELM prayer page HTTP {resp.status}")
+            text = await resp.text()
+
+    # Find the line that starts with today's date.
+    # Example:
+    # 13/02/2026 25 Sha‘bān 1447 7:15 5:38 5:58 12:20 1:00 2:43 3:23 3:45 5:15 5:22 6:45 7:30
+    pattern = rf"^{re.escape(today)}\s+(.+?)$"
+    m = re.search(pattern, text, flags=re.MULTILINE)
+    if not m:
+        raise RuntimeError(f"Could not find today's row for {today}")
+
+    row = m.group(0).strip()
+    parts = row.split()
+
+    # parts[0] = date
+    # parts[1..3] = hijri (often 3 tokens, e.g. "25", "Sha‘bān", "1447")
+    # then 10 time tokens
+    if len(parts) < 14:
+        raise RuntimeError(f"Unexpected row format: {row}")
+
+    date_str = parts[0]
+    hijri = " ".join(parts[1:4])
+    times = parts[4:14]  # 10 items
+
+    keys = [
+        "sunrise",
+        "fajr_beg", "fajr_jam",
+        "zuhr_beg", "zuhr_jam",
+        "asr_beg", "asr_jam",
+        "maghrib_beg", "maghrib_jam",
+        "isha_beg", "isha_jam",
+    ]
+
+    # The row provides exactly 10 time tokens after hijri + sunrise? (ELM row includes sunrise + 9 others = 10)
+    # Observed: sunrise + (fajr beg/jam) + (zuhr beg/jam) + (asr beg/jam) + (maghrib beg/jam) + (isha beg/jam) = 11
+    # BUT from the page: after Hijri there are 11 time values:
+    # sunrise, fajr beg, fajr jam, zuhr beg, zuhr jam, asr beg, asr jam, maghrib beg, maghrib jam, isha beg, isha jam
+    # So we should take 11, not 10.
+    times = parts[4:15]
+    if len(times) != 11:
+        raise RuntimeError(f"Expected 11 time tokens, got {len(times)}: {times}")
+
+    data = dict(zip(keys, times))
+
+    def to_dt(hhmm: str) -> datetime:
+        # times are like "5:38" or "12:20" (no leading zero)
+        h, m = hhmm.split(":")
+        now = datetime.now(LONDON_TZ)
+        return now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+
+    # Build dt objects for begins times for notifications
+    begins = {
+        "Fajr": to_dt(data["fajr_beg"]),
+        "Zuhr": to_dt(data["zuhr_beg"]),
+        "Asr": to_dt(data["asr_beg"]),
+        "Maghrib": to_dt(data["maghrib_beg"]),
+        "Isha": to_dt(data["isha_beg"]),
+    }
+
+    jamaah = {
+        "Fajr": to_dt(data["fajr_jam"]),
+        "Zuhr": to_dt(data["zuhr_jam"]),
+        "Asr": to_dt(data["asr_jam"]),
+        "Maghrib": to_dt(data["maghrib_jam"]),
+        "Isha": to_dt(data["isha_jam"]),
+    }
+
+    return {
+        "date": date_str,
+        "hijri": hijri,
+        "raw": data,
+        "begins": begins,
+        "jamaah": jamaah,
+    }
 
 # =========================
 # Snake (reaction + command controls)
@@ -959,21 +1046,6 @@ async def trivialeaderboard(ctx, metric: str = "correct", min_attempts: int = 1,
     )
     embed.set_footer(text=f"Filter: min attempts ≥ {min_attempts} • Metric: {metric}")
     await ctx.send(embed=embed)
-# =========================
-# .json Package download
-# =========================
-
-@bot.command(name="package", help="Sends a zip backup of all JSON economy/stat files.")
-async def package_cmd(ctx: commands.Context):
-    buf = build_package_zip_bytes()
-    file = discord.File(buf, filename="QMULBotBackup.zip")
-
-    embed = discord.Embed(
-        title="📦 Package Backup",
-        description="Here’s the latest backup zip of the bot JSON files.",
-        color=discord.Color.blurple()
-    )
-    await ctx.send(embed=embed, file=file)
 
 # =========================
 # Economy helpers
@@ -1093,6 +1165,7 @@ async def insult(ctx, member: discord.Member):
         "I hope love never finds ur fugly ahh",
         "Fuckkk 🐺...",
         "flippin Malteser",
+        "Fuck you, you ho. Come and say to my face, I'll fuck you in the ass in front of everybody. You bitch.",
         "Whoever's willing to fuck you is just too lazy to jerk off.",
         "God just be making anyone",
         "You should have been a blowjob"
@@ -2606,6 +2679,78 @@ async def cover_leave(ctx: commands.Context):
     except discord.HTTPException as e:
         await ctx.send(f"⚠️ Failed to remove: {type(e).__name__}. Try again later.")
 
+@bot.command(name="prayer", help="Show what prayer time we're in now + what's next (ELM times).")
+async def prayer(ctx):
+    try:
+        today = await fetch_elm_today()
+    except Exception:
+        return await ctx.send("⚠️ Couldn’t fetch ELM prayer times right now. Try again in a bit.")
+
+    now = datetime.now(LONDON_TZ)
+    begins = today["begins"]
+
+    # Order of prayers for the day
+    order = ["Fajr", "Zuhr", "Asr", "Maghrib", "Isha"]
+    times = [(p, begins[p]) for p in order]
+    times.sort(key=lambda x: x[1])
+
+    current_prayer = None
+    next_prayer = None
+
+    for i, (p, t) in enumerate(times):
+        nxt = times[i + 1][0] if i + 1 < len(times) else None
+        nxt_t = times[i + 1][1] if i + 1 < len(times) else None
+
+        if now >= t and (nxt_t is None or now < nxt_t):
+            current_prayer = p
+            next_prayer = nxt
+            next_time = nxt_t
+            break
+
+    # If it's after Isha begins, next is tomorrow's Fajr (we’ll just label it)
+    if current_prayer is None and now < begins["Fajr"]:
+        current_prayer = "Before Fajr"
+        next_prayer = "Fajr"
+        next_time = begins["Fajr"]
+    elif current_prayer == "Isha" and next_prayer is None:
+        next_prayer = "Fajr (tomorrow)"
+        next_time = None
+
+    embed = discord.Embed(title="🕌 Prayer Status (ELM)", color=discord.Color.purple())
+    embed.add_field(name="Date", value=f"{today['date']} • {today['hijri']}", inline=False)
+
+    if current_prayer and current_prayer != "Before Fajr":
+        embed.add_field(
+            name="You can pray now",
+            value=f"✅ **{current_prayer}** (began {begins[current_prayer].strftime('%H:%M')})",
+            inline=False
+        )
+    else:
+        embed.add_field(name="You can pray now", value="⏳ Not in a prayer window yet (before Fajr).", inline=False)
+
+    if next_prayer == "Fajr (tomorrow)":
+        embed.add_field(name="Next prayer", value="➡️ **Fajr (tomorrow)**", inline=False)
+    else:
+        remaining = int((next_time - now).total_seconds()) if next_time else None
+        if remaining is not None:
+            h = remaining // 3600
+            m = (remaining % 3600) // 60
+            embed.add_field(
+                name="Next prayer",
+                value=f"➡️ **{next_prayer}** at **{next_time.strftime('%H:%M')}** (in {h}h {m}m)",
+                inline=False
+            )
+
+    # quick table of begins/jamaah
+    lines = []
+    for p in ["Fajr", "Zuhr", "Asr", "Maghrib", "Isha"]:
+        lines.append(
+            f"**{p}:** begins {today['begins'][p].strftime('%H:%M')} • jamā‘ah {today['jamaah'][p].strftime('%H:%M')}"
+        )
+    embed.add_field(name="Today’s times", value="\n".join(lines)[:1024], inline=False)
+
+    await ctx.send(embed=embed)
+
 @bot.command(
     name="baltop",
     help="Show the richest users by total balance (wallet + bank). Usage: !baltop [count]"
@@ -2728,28 +2873,6 @@ async def on_member_join(member):
 # =========================
 # Background Tasks
 # =========================
-@tasks.loop(seconds=PACKAGE_INTERVAL_SECONDS)
-async def auto_send_package():
-    await bot.wait_until_ready()
-
-    user = bot.get_user(PACKAGE_USER_ID)
-    if user is None:
-        try:
-            user = await bot.fetch_user(PACKAGE_USER_ID)
-        except Exception:
-            return
-
-    try:
-        buf = build_package_zip_bytes()
-        file = discord.File(buf, filename="QMULBotBackup.zip")
-        await user.send("📦 Auto-backup [5 hours]:", file=file)
-    except discord.Forbidden:
-        # user has DMs closed to the bot
-        pass
-    except discord.HTTPException:
-        # rate limit / transient send failure
-        pass
-
 @tasks.loop(seconds=INTEREST_INTERVAL)
 async def apply_bank_interest():
     await bot.wait_until_ready()
@@ -2854,6 +2977,88 @@ async def pay_dividends():
         if channel:
             await channel.send("💸 Dividends have been paid out to all shareholders!")
 
+@tasks.loop(seconds=20)
+async def prayer_time_notifier():
+    await bot.wait_until_ready()
+    channel = bot.get_channel(PRAYER_UPDATES_CHANNEL_ID)
+    if not channel:
+        return
+
+    # Load today’s times
+    try:
+        today = await fetch_elm_today()
+    except Exception:
+        return  # fail silently; you can log if you want
+
+    now = datetime.now(LONDON_TZ)
+    date_key = now.strftime("%Y-%m-%d")
+
+    state = _load_state(PRAYER_NOTIF_STATE_FILE, {"date": None, "sent": {}})
+
+    # Reset state if new day
+    if state.get("date") != date_key:
+        state = {"date": date_key, "sent": {}}
+
+    # Notify once per prayer
+    for prayer, t in today["begins"].items():
+        # fire when we are within a small window after start
+        if now >= t and (now - t).total_seconds() <= 90:
+            if state["sent"].get(prayer):
+                continue
+
+            jam = today["jamaah"][prayer].strftime("%H:%M")
+            beg = t.strftime("%H:%M")
+
+            embed = discord.Embed(
+                title="🕌 Prayer Time",
+                description=f"**{prayer}** has begun (**{beg}**).\nJamā‘ah at **{jam}**.",
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text=f"ELM • {today['date']} • {today['hijri']}")
+            await channel.send(embed=embed)
+
+            state["sent"][prayer] = True
+            _save_state(PRAYER_NOTIF_STATE_FILE, state)
+
+@tasks.loop(minutes=5)
+async def ramadan_daily_iftar_post():
+    await bot.wait_until_ready()
+    channel = bot.get_channel(PRAYER_UPDATES_CHANNEL_ID)
+    if not channel:
+        return
+
+    now = datetime.now(LONDON_TZ)
+    date_key = now.strftime("%Y-%m-%d")
+
+    state = _load_state(RAMADAN_POST_STATE_FILE, {"date": None})
+
+    # Post once per day, in the morning (adjust hour if you want)
+    if state.get("date") == date_key:
+        return
+    if now.hour < 8:  # don’t post before 8am
+        return
+
+    try:
+        today = await fetch_elm_today()
+    except Exception:
+        return
+
+    iftar_time = today["begins"]["Maghrib"].strftime("%H:%M")
+
+    embed = discord.Embed(
+        title="🌙 Ramadan Update",
+        description=f"**Iftar (Maghrib begins): {iftar_time}**\n\nTimetable:",
+        color=discord.Color.gold()
+    )
+    # show the timetable image if the URL is valid
+    if RAMADAN_TIMETABLE_IMAGE_URL:
+        embed.set_image(url=RAMADAN_TIMETABLE_IMAGE_URL)
+
+    embed.set_footer(text=f"ELM • {today['date']} • {today['hijri']}")
+    await channel.send(embed=embed)
+
+    _save_state(RAMADAN_POST_STATE_FILE, {"date": date_key})
+
 # =========================
 # Ready
 # =========================
@@ -2866,9 +3071,6 @@ async def on_ready():
         update_stock_prices.start()
     if not pay_dividends.is_running():
         pay_dividends.start()
-
-    if not auto_send_package.is_running():
-        auto_send_package.start()
 
 # =========================
 # Boot
