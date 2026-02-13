@@ -810,7 +810,7 @@ async def prayer(ctx: commands.Context):
 
     # Build display lines
     pretty_date = entry.get("pretty_date", today_key)
-    masjid = cfg.get("masjid_name", "Barnet Islamic Centre (BIC)")
+    masjid = cfg.get("masjid_name", "Todays")
 
     lines = []
     for name, _d, hhmm in dt:
