@@ -745,110 +745,64 @@ async def table(ctx: commands.Context):
     embed = discord.Embed(title="🕌 Ramadan Times (Today)", description=desc, color=discord.Color.gold())
     await ctx.send(embed=embed)
 
-@bot.command(name="prayer", help="Show today's prayer times + current prayer + next prayer countdown.")
+@bot.command(name="prayer", help="Show today's 5 prayer times + current prayer window + next prayer.")
 async def prayer(ctx: commands.Context):
-    tz = ZoneInfo(PRAYER_TIMEZONE)
+    # --- Hardcoded Barnet (approx) + London TZ + MWL method ---
+    PRAYER_LAT = 51.652
+    PRAYER_LON = -0.200
+    PRAYER_METHOD = 3  # MWL
+    TZ_NAME = "Europe/London"
+
+    tz = ZoneInfo(TZ_NAME)
     now_local = datetime.now(tz)
-    today = now_local.date()
+    date_str = now_local.strftime("%d-%m-%Y")
 
-    try:
-        times = await fetch_prayer_times_today(
-            PRAYER_LAT, PRAYER_LON, PRAYER_TIMEZONE, PRAYER_METHOD, PRAYER_SCHOOL
-        )
-    except Exception as e:
-        return await ctx.send(f"❌ Couldn’t fetch prayer times right now. ({type(e).__name__})")
-
-    # Build datetimes for today
-    dt = {
-        name: _parse_hhmm_local(today, hhmm, tz)
-        for name, hhmm in times.items()
+    # Fetch timings from AlAdhan
+    url = "https://api.aladhan.com/v1/timings"
+    params = {
+        "latitude": PRAYER_LAT,
+        "longitude": PRAYER_LON,
+        "method": PRAYER_METHOD,
+        "date": date_str,
     }
 
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    return await ctx.send(f"❌ Couldn’t fetch prayer times (HTTP {resp.status}).")
+                data = await resp.json()
+    except Exception as e:
+        # show the real error so we can diagnose next time
+        return await ctx.send(f"❌ Couldn’t fetch prayer times right now.\n**Error:** `{type(e).__name__}: {e}`")
+
+    timings = data["data"]["timings"]
+
+    def clean(t):
+        # sometimes returns "05:12 (GMT)" -> keep "05:12"
+        return str(t).split(" ")[0].strip()
+
+    # 5 daily prayers only
+    times = {
+        "Fajr": clean(timings["Fajr"]),
+        "Dhuhr": clean(timings["Dhuhr"]),
+        "Asr": clean(timings["Asr"]),
+        "Maghrib": clean(timings["Maghrib"]),
+        "Isha": clean(timings["Isha"]),
+    }
+
+    # Build local datetimes for comparison
+    today = now_local.date()
+
+    def to_dt(hhmm: str) -> datetime:
+        h, m = hhmm.split(":")
+        return datetime(today.year, today.month, today.day, int(h), int(m), tzinfo=tz)
+
     order = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]
+    dt = {k: to_dt(v) for k, v in times.items()}
 
-    # Determine current + next
-    # Logic:
-    # - If now < Fajr => current is "Isha (last night)" and next is Fajr
-    # - Else find the latest prayer start <= now, and next is the next one (or tomorrow's Fajr)
-    if now_local < dt["Fajr"]:
-        current_prayer = "Isha (last night)"
-        next_prayer = "Fajr"
-        next_dt = dt["Fajr"]
-    else:
-        current_prayer = None
-        next_prayer = None
-        next_dt = None
-
-        for i, name in enumerate(order):
-            start = dt[name]
-            # if this is last prayer of day:
-            if name == "Isha":
-                if now_local >= start:
-                    current_prayer = "Isha"
-                    next_prayer = "Fajr"
-                    # tomorrow fajr: refetch tomorrow times or approximate by calling API tomorrow
-                    # We'll do a quick API fetch for tomorrow to be accurate.
-                    try:
-                        # get tomorrow timings
-                        tomorrow_local = (now_local + timedelta(days=1)).date()
-                        # temporarily compute date_str by shifting system date in fetch function:
-                        # easiest: direct call to API endpoint that supports date via params
-                        # We'll reuse the same function by monkeying now_local isn't possible,
-                        # so do a direct request here:
-                        url = "https://api.aladhan.com/v1/timings"
-                        params = {
-                            "latitude": PRAYER_LAT,
-                            "longitude": PRAYER_LON,
-                            "method": PRAYER_METHOD,
-                            "school": PRAYER_SCHOOL,
-                            "date": (datetime.combine(tomorrow_local, datetime.min.time()).strftime("%d-%m-%Y")),
-                        }
-                        timeout = aiohttp.ClientTimeout(total=8)
-                        async with aiohttp.ClientSession(timeout=timeout) as session:
-                            async with session.get(url, params=params) as resp:
-                                data = await resp.json()
-                        fajr_tomorrow = str(data["data"]["timings"]["Fajr"]).split(" ")[0].strip()
-                        next_dt = _parse_hhmm_local(tomorrow_local, fajr_tomorrow, tz)
-                    except Exception:
-                        # fallback: assume next fajr is tomorrow at same time (good enough if API fails)
-                        next_dt = dt["Fajr"] + timedelta(days=1)
-                    break
-            else:
-                nxt = dt[order[i + 1]]
-                if start <= now_local < nxt:
-                    current_prayer = name
-                    next_prayer = order[i + 1]
-                    next_dt = nxt
-                    break
-
-        # If somehow not set (edge case), default safely
-        if current_prayer is None:
-            current_prayer = "Isha"
-            next_prayer = "Fajr"
-            next_dt = dt["Fajr"] + timedelta(days=1)
-
-    # Countdown to next prayer
-    seconds_left = int((next_dt - now_local).total_seconds())
-    left_txt = _human_delta(seconds_left)
-
-    # Pretty list
-    lines = []
-    for name in order:
-        marker = "✅" if name == current_prayer else "🕋"
-        lines.append(f"{marker} **{name}:** `{times[name]}`")
-
-    embed = discord.Embed(
-        title="🕌 Today’s Prayer Times",
-        description="\n".join(lines),
-        color=discord.Color.gold()
-    )
-    embed.add_field(name="📍 Location", value="Barnet (approx) • Europe/London", inline=False)
-    embed.add_field(name="🕰️ Now", value=f"`{now_local.strftime('%H:%M')}`", inline=True)
-    embed.add_field(name="Current", value=f"**{current_prayer}**", inline=True)
-    embed.add_field(name="Next", value=f"**{next_prayer}** in **{left_txt}** (at `{_fmt_dt(next_dt)}`)", inline=False)
-
-    await ctx.send(embed=embed)
-
+    # Determine current window + next pra
 
 # =========================
 # Snake (reaction + command controls)
