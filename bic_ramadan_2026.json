@@ -1,0 +1,40 @@
+{
+  "timezone": "Europe/London",
+  "year": 2026,
+  "days": {
+    "2026-02-17": {"sehri_end": "5:29", "iftar": "5:22", "taraweeh": "7:45"},
+    "2026-02-18": {"sehri_end": "5:27", "iftar": "5:26", "taraweeh": "7:45"},
+    "2026-02-19": {"sehri_end": "5:24", "iftar": "5:28", "taraweeh": "7:45"},
+    "2026-02-20": {"sehri_end": "5:23", "iftar": "5:30", "taraweeh": "7:45"},
+    "2026-02-21": {"sehri_end": "5:21", "iftar": "5:31", "taraweeh": "7:45"},
+    "2026-02-22": {"sehri_end": "5:19", "iftar": "5:33", "taraweeh": "7:45"},
+    "2026-02-23": {"sehri_end": "5:17", "iftar": "5:35", "taraweeh": "7:45"},
+    "2026-02-24": {"sehri_end": "5:14", "iftar": "5:37", "taraweeh": "7:45"},
+    "2026-02-25": {"sehri_end": "5:12", "iftar": "5:39", "taraweeh": "7:45"},
+    "2026-02-26": {"sehri_end": "5:10", "iftar": "5:40", "taraweeh": "7:45"},
+
+    "2026-02-27": {"sehri_end": "5:08", "iftar": "5:42", "taraweeh": "8:00"},
+    "2026-02-28": {"sehri_end": "5:06", "iftar": "5:44", "taraweeh": "8:00"},
+    "2026-03-01": {"sehri_end": "5:04", "iftar": "5:46", "taraweeh": "8:00"},
+    "2026-03-02": {"sehri_end": "5:02", "iftar": "5:47", "taraweeh": "8:00"},
+    "2026-03-03": {"sehri_end": "5:00", "iftar": "5:49", "taraweeh": "8:00"},
+    "2026-03-04": {"sehri_end": "4:59", "iftar": "5:51", "taraweeh": "8:00"},
+    "2026-03-05": {"sehri_end": "4:57", "iftar": "5:53", "taraweeh": "8:00"},
+    "2026-03-06": {"sehri_end": "4:55", "iftar": "5:54", "taraweeh": "8:00"},
+    "2026-03-07": {"sehri_end": "4:53", "iftar": "5:56", "taraweeh": "8:00"},
+    "2026-03-08": {"sehri_end": "4:51", "iftar": "5:58", "taraweeh": "8:15"},
+
+    "2026-03-09": {"sehri_end": "4:48", "iftar": "5:58", "taraweeh": "8:15"},
+    "2026-03-10": {"sehri_end": "4:46", "iftar": "6:00", "taraweeh": "8:15"},
+    "2026-03-11": {"sehri_end": "4:44", "iftar": "6:03", "taraweeh": "8:15"},
+    "2026-03-12": {"sehri_end": "4:42", "iftar": "6:03", "taraweeh": "8:15"},
+    "2026-03-13": {"sehri_end": "4:39", "iftar": "6:05", "taraweeh": "8:15"},
+    "2026-03-14": {"sehri_end": "4:37", "iftar": "6:06", "taraweeh": "8:15"},
+    "2026-03-15": {"sehri_end": "4:35", "iftar": "6:08", "taraweeh": "8:15"},
+    "2026-03-16": {"sehri_end": "4:33", "iftar": "6:10", "taraweeh": "8:15"},
+    "2026-03-17": {"sehri_end": "4:30", "iftar": "6:12", "taraweeh": "8:15"},
+    "2026-03-18": {"sehri_end": "4:28", "iftar": "6:15", "taraweeh": "8:15"},
+    "2026-03-19": {"sehri_end": "4:26", "iftar": "6:15", "taraweeh": "8:15"},
+    "2026-03-20": {"sehri_end": "4:25", "iftar": "6:17", "taraweeh": "8:15"}
+  }
+}
