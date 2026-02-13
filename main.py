@@ -13,7 +13,6 @@ import numpy as np
 import shutil
 import aiohttp
 from zoneinfo import ZoneInfo
-import re
 
 # =========================
 # Boot / Config
@@ -55,6 +54,15 @@ SUGGESTION_FILE = "suggestions.json"
 TRIVIA_STATS_FILE = "trivia_stats.json"
 TRIVIA_STREAKS_FILE = "trivia_streaks.json"
 BEG_STATS_FILE = "beg_stats.json"
+
+# =========================
+# Ramadan Timetable Addon (BIC)
+# =========================
+BIC_RAMADAN_JSON = "bic_ramadan_2026.json"
+RAMADAN_STATE_FILE = "ramadan_state.json"
+BIC_POST_CHANNEL_ID = 1471992400351334626  # posts here
+BIC_TIMEZONE = "Europe/London"
+
 
 ANNOUNCEMENT_CHANNEL_ID = 1433248053665726547
 WELCOME_CHANNEL_ID = 1433248053665726546
@@ -168,89 +176,6 @@ MC_NOTES = [
 MC_SHOW_BEDROCK = False
 MC_BEDROCK_PORT = 22165  # display-only if MC_SHOW_BEDROCK=True
 
-LONDON_TZ = ZoneInfo("Europe/London")
-
-PRAYER_UPDATES_CHANNEL_ID = 1471992400351334626  # <-- your channel
-
-# You pasted this URL truncated; keep it as-is if it works, but you likely need the full IDMF value.
-RAMADAN_TIMETABLE_IMAGE_URL = "https://www.eastlondonmosque.org.uk/Handlers/GetImage.ashx?IDMF=563cffb2-14c6-4a1f-a94f-"
-
-ELM_PRAYER_TEST_URL = "https://www.eastlondonmosque.org.uk/prayer-times-test"
-
-PRAYER_NOTIF_STATE_FILE = "prayer_notif_state.json"   # remembers what we've already notified today
-RAMADAN_POST_STATE_FILE  = "ramadan_post_state.json"  # remembers if we already posted today's iftar update
-
-from zoneinfo import ZoneInfo
-
-RAMADAN_CHANNEL_ID = 1471992400351334626
-RAMADAN_FILE = "bic_ramadan_2026.json"
-
-BIC_TZ = ZoneInfo("Europe/London")
-
-# Reminder settings (change whenever)
-SUHOOR_WARN_MINUTES = 10      # warn X mins before sehri end
-IFTAR_WARN_MINUTES  = 10      # warn X mins before iftar
-TARAWEEH_WARN_MINUTES = 15    # optional: remind X mins before taraweeh
-
-ENABLE_SUHOOR_WARN = True
-ENABLE_IFTAR_WARN  = True
-ENABLE_TARAWEEH_WARN = True
-
-# Daily posts
-ENABLE_DAILY_RAMADAN_POST = True   # morning post with today's times
-ENABLE_DAILY_DUA_POST = True       # daily dua
-DAILY_POST_HOUR = 9                # 09:00 local
-DAILY_POST_MINUTE = 0
-
-def load_ramadan():
-    if not os.path.exists(RAMADAN_FILE):
-        return {}
-    try:
-        with open(RAMADAN_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def _parse_hm(hm: str):
-    # hm like "5:29" or "05:29"
-    hm = hm.strip()
-    parts = hm.split(":")
-    h = int(parts[0])
-    m = int(parts[1])
-    return h, m
-
-def _local_dt_for(date_str: str, hm: str):
-    # date_str = "YYYY-MM-DD", hm="H:MM" -> aware datetime in Europe/London
-    y, mo, d = map(int, date_str.split("-"))
-    h, m = _parse_hm(hm)
-    return datetime(y, mo, d, h, m, tzinfo=BIC_TZ)
-
-def get_ramadan_day(date_obj: datetime):
-    # date_obj should be aware; we key by YYYY-MM-DD in local time
-    key = date_obj.astimezone(BIC_TZ).strftime("%Y-%m-%d")
-    data = load_ramadan()
-    return key, (data.get("days", {}) or {}).get(key)
-
-def _format_times_block(date_key: str, rec: dict):
-    return (
-        f"📅 **{date_key}**\n"
-        f"🌙 **Sehri ends:** `{rec['sehri_end']}`\n"
-        f"🌇 **Iftar:** `{rec['iftar']}`\n"
-        f"🕌 **Taraweeh:** `{rec['taraweeh']}`"
-    )
-
-DUAS = [
-    ("Dua for Iftar", "اللَّهُمَّ إِنِّي لَكَ صُمْتُ وَبِكَ آمَنْتُ وَعَلَيْكَ تَوَكَّلْتُ وَعَلَى رِزْقِكَ أَفْطَرْتُ"),
-    ("Dua for Iftar (English)", "O Allah, I fasted for You and I believe in You and I place my trust in You and with Your provision I break my fast."),
-    ("Dua for Suhoor Intention", "وَبِصَوْمِ غَدٍ نَوَيْتُ مِنْ شَهْرِ رَمَضَانَ"),
-    ("General Dua", "اللَّهُمَّ إِنَّكَ عَفُوٌّ تُحِبُّ العَفْوَ فَاعْفُ عَنِّي"),
-    ("Laylatul Qadr Dua (English)", "O Allah, You are Most Forgiving, and You love forgiveness; so forgive me.")
-]
-
-def pick_daily_dua(date_key: str):
-    # deterministic rotation so it doesn't feel random every restart
-    idx = abs(hash(date_key)) % len(DUAS)
-    return DUAS[idx]
 
 class MCLinksView(discord.ui.View):
     def __init__(self):
@@ -425,95 +350,6 @@ async def mc(ctx: commands.Context):
     await ctx.send(embed=embed, view=view)
 
 # =========================
-# Ramadan background engine
-# =========================
-
-RAMADAN_SENT = set()  # holds keys like "2026-03-02|iftar_warn"
-
-async def ramadan_send(embed: discord.Embed = None, content: str = None):
-    ch = bot.get_channel(RAMADAN_CHANNEL_ID)
-    if not ch:
-        return
-    try:
-        await ch.send(content=content, embed=embed)
-    except Exception:
-        pass
-
-def _sent_key(date_key: str, what: str) -> str:
-    return f"{date_key}|{what}"
-
-@tasks.loop(seconds=30)
-async def ramadan_reminder_loop():
-    await bot.wait_until_ready()
-
-    now = datetime.now(tz=BIC_TZ)
-    date_key, rec = get_ramadan_day(now)
-    if not rec:
-        return  # outside timetable range
-
-    # Build today event datetimes
-    sehri_dt = _local_dt_for(date_key, rec["sehri_end"])
-    iftar_dt = _local_dt_for(date_key, rec["iftar"])
-    tara_dt  = _local_dt_for(date_key, rec["taraweeh"])
-
-    # Windows (exact minute) so we don't spam
-    def in_minute_window(target_dt: datetime):
-        return 0 <= (target_dt - now).total_seconds() < 30
-
-    # ===== Suhoor warning =====
-    if ENABLE_SUHOOR_WARN:
-        warn_dt = sehri_dt - timedelta(minutes=SUHOOR_WARN_MINUTES)
-        k = _sent_key(date_key, "suhoor_warn")
-        if k not in RAMADAN_SENT and in_minute_window(warn_dt):
-            RAMADAN_SENT.add(k)
-            e = discord.Embed(
-                title="🌙 Suhoor Reminder",
-                description=(
-                    f"**{SUHOOR_WARN_MINUTES} minutes left!**\n\n"
-                    f"⏳ **Sehri ends:** `{rec['sehri_end']}`\n"
-                    f"📍 Barnet Islamic Centre"
-                ),
-                color=discord.Color.blue()
-            )
-            await ramadan_send(embed=e)
-
-    # ===== Iftar warning =====
-    if ENABLE_IFTAR_WARN:
-        warn_dt = iftar_dt - timedelta(minutes=IFTAR_WARN_MINUTES)
-        k = _sent_key(date_key, "iftar_warn")
-        if k not in RAMADAN_SENT and in_minute_window(warn_dt):
-            RAMADAN_SENT.add(k)
-            title, dua = pick_daily_dua(date_key)
-            e = discord.Embed(
-                title="🌇 Iftar Reminder",
-                description=(
-                    f"**{IFTAR_WARN_MINUTES} minutes to Iftar!**\n\n"
-                    f"🌇 **Iftar:** `{rec['iftar']}`\n"
-                    f"🧡 **{title}:**\n{dua}\n\n"
-                    f"📍 Barnet Islamic Centre"
-                ),
-                color=discord.Color.gold()
-            )
-            await ramadan_send(embed=e)
-
-    # ===== Taraweeh reminder =====
-    if ENABLE_TARAWEEH_WARN:
-        warn_dt = tara_dt - timedelta(minutes=TARAWEEH_WARN_MINUTES)
-        k = _sent_key(date_key, "taraweeh_warn")
-        if k not in RAMADAN_SENT and in_minute_window(warn_dt):
-            RAMADAN_SENT.add(k)
-            e = discord.Embed(
-                title="🕌 Taraweeh Reminder",
-                description=(
-                    f"**{TARAWEEH_WARN_MINUTES} minutes to Taraweeh**\n\n"
-                    f"🕌 **Taraweeh:** `{rec['taraweeh']}`\n"
-                    f"📍 Barnet Islamic Centre"
-                ),
-                color=discord.Color.purple()
-            )
-            await ramadan_send(embed=e)
-
-# =========================
 # Utilities: File I/O
 # =========================
 def _load_json(path, default):
@@ -633,107 +469,153 @@ def load_beg_stats():
 def save_beg_stats(d):
     _save_json(BEG_STATS_FILE, d)
 
-import re
+# =========================
+# Ramadan Timetable Addon (JSON-driven)
+# =========================
 
-def _load_state(path: str, default: dict):
+def _load_json_file(path: str, default):
     if not os.path.exists(path):
         return default
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except json.JSONDecodeError:
         return default
 
-def _save_state(path: str, obj: dict):
-    with open(path, "w") as f:
-        json.dump(obj, f, indent=2)
+def _save_json_file(path: str, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
 
-async def fetch_elm_today():
-    """
-    Scrape https://www.eastlondonmosque.org.uk/prayer-times-test and extract today's row.
-    Row format (observed):
-    DD/MM/YYYY Hijri Sunrise FajrBeg FajrJam ZuhrBeg ZuhrJam AsrBeg AsrJam MagBeg MagJam IshaBeg IshaJam
-    """
-    today = datetime.now(LONDON_TZ).strftime("%d/%m/%Y")
+def load_ramadan_config():
+    data = _load_json_file(BIC_RAMADAN_JSON, {})
+    if not data or "days" not in data:
+        raise RuntimeError(f"Missing or invalid {BIC_RAMADAN_JSON}")
+    return data
 
-    timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(ELM_PRAYER_TEST_URL) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"ELM prayer page HTTP {resp.status}")
-            text = await resp.text()
+def load_ramadan_state():
+    return _load_json_file(RAMADAN_STATE_FILE, {"sent": {}, "last_daily_post": ""})
 
-    # Find the line that starts with today's date.
-    # Example:
-    # 13/02/2026 25 Sha‘bān 1447 7:15 5:38 5:58 12:20 1:00 2:43 3:23 3:45 5:15 5:22 6:45 7:30
-    pattern = rf"^{re.escape(today)}\s+(.+?)$"
-    m = re.search(pattern, text, flags=re.MULTILINE)
-    if not m:
-        raise RuntimeError(f"Could not find today's row for {today}")
+def save_ramadan_state(state):
+    _save_json_file(RAMADAN_STATE_FILE, state)
 
-    row = m.group(0).strip()
-    parts = row.split()
+def _parse_hhmm(date_str: str, hhmm: str, tz: ZoneInfo) -> datetime:
+    hour, minute = hhmm.split(":")
+    return datetime.fromisoformat(date_str).replace(
+        hour=int(hour), minute=int(minute), second=0, microsecond=0, tzinfo=tz
+    )
 
-    # parts[0] = date
-    # parts[1..3] = hijri (often 3 tokens, e.g. "25", "Sha‘bān", "1447")
-    # then 10 time tokens
-    if len(parts) < 14:
-        raise RuntimeError(f"Unexpected row format: {row}")
+def format_day_text(cfg, entry, date_key: str) -> str:
+    masjid = cfg.get("masjid_name", "Masjid")
+    pretty = entry.get("pretty_date", date_key)
+    rd = entry.get("ramadan_day", "")
+    rd_txt = f" (Day {rd})" if rd else ""
 
-    date_str = parts[0]
-    hijri = " ".join(parts[1:4])
-    times = parts[4:14]  # 10 items
+    lines = [
+        f"**{masjid} — Ramadan Timetable**",
+        f"**{pretty}{rd_txt}**",
+        "",
+        f"🌙 **Suhur ends:** `{entry['suhur_ends']}`",
+        f"🕌 **Fajr Jama'ah:** `{entry['fajr_jamaah']}`",
+        f"🕛 **Zuhr Jama'ah:** `{entry['zuhr_jamaah']}`",
+        f"🕓 **Asr Jama'ah:** `{entry['asr_jamaah']}`",
+        "",
+        f"🌅 **Iftar time:** `{entry['iftar_time']}`",
+        f"🕌 **Maghrib Jama'ah:** `{entry['maghrib_jamaah']}`",
+        f"🕌 **Isha Jama'ah:** `{entry['isha_jamaah']}`",
+        f"🕌 **Taraweeh:** `{entry['taraweeh']}`",
+    ]
+    note = cfg.get("note")
+    if note:
+        lines += ["", f"ℹ️ {note}"]
+    return "\n".join(lines)
 
-    keys = [
-        "sunrise",
-        "fajr_beg", "fajr_jam",
-        "zuhr_beg", "zuhr_jam",
-        "asr_beg", "asr_jam",
-        "maghrib_beg", "maghrib_jam",
-        "isha_beg", "isha_jam",
+async def _post_embed_to_channel(channel_id: int, title: str, description: str, color: discord.Color):
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            return
+    embed = discord.Embed(title=title, description=description, color=color)
+    await channel.send(embed=embed)
+
+@tasks.loop(seconds=30)
+async def ramadan_bic_scheduler():
+    await bot.wait_until_ready()
+
+    cfg = load_ramadan_config()
+    tz = ZoneInfo(cfg.get("timezone", BIC_TIMEZONE))
+    channel_id = int(cfg.get("post_channel_id", BIC_POST_CHANNEL_ID))
+    state = load_ramadan_state()
+
+    now_local = datetime.now(tz)
+    today_key = now_local.date().isoformat()
+    entry = cfg["days"].get(today_key)
+
+    # Daily post at 00:05 local time (once)
+    if entry and state.get("last_daily_post") != today_key:
+        if now_local.hour == 0 and now_local.minute >= 5:
+            desc = format_day_text(cfg, entry, today_key)
+            await _post_embed_to_channel(
+                channel_id,
+                "🗓️ Today’s Ramadan Times",
+                desc,
+                discord.Color.gold()
+            )
+            state["last_daily_post"] = today_key
+            save_ramadan_state(state)
+
+    if not entry:
+        return
+
+    reminders = cfg.get("reminders", {})
+    reminder_specs = [
+        ("suhur_ends", "⏳ Suhur Reminder", int(reminders.get("suhur_minutes_before", 30)),
+         "Suhur ends at **{time}** — finish eating/drinking now."),
+        ("iftar_time", "🌅 Iftar Reminder", int(reminders.get("iftar_minutes_before", 10)),
+         "Iftar is at **{time}** — get ready."),
+        ("taraweeh", "🕌 Taraweeh Reminder", int(reminders.get("taraweeh_minutes_before", 20)),
+         "Taraweeh starts at **{time}** — time to head over."),
     ]
 
-    # The row provides exactly 10 time tokens after hijri + sunrise? (ELM row includes sunrise + 9 others = 10)
-    # Observed: sunrise + (fajr beg/jam) + (zuhr beg/jam) + (asr beg/jam) + (maghrib beg/jam) + (isha beg/jam) = 11
-    # BUT from the page: after Hijri there are 11 time values:
-    # sunrise, fajr beg, fajr jam, zuhr beg, zuhr jam, asr beg, asr jam, maghrib beg, maghrib jam, isha beg, isha jam
-    # So we should take 11, not 10.
-    times = parts[4:15]
-    if len(times) != 11:
-        raise RuntimeError(f"Expected 11 time tokens, got {len(times)}: {times}")
+    for field, title, mins_before, template in reminder_specs:
+        hhmm = entry.get(field)
+        if not hhmm:
+            continue
 
-    data = dict(zip(keys, times))
+        event_dt = _parse_hhmm(today_key, hhmm, tz)
+        remind_dt = event_dt - timedelta(minutes=mins_before)
 
-    def to_dt(hhmm: str) -> datetime:
-        # times are like "5:38" or "12:20" (no leading zero)
-        h, m = hhmm.split(":")
-        now = datetime.now(LONDON_TZ)
-        return now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+        # Fire within 30 seconds window
+        if remind_dt <= now_local < (remind_dt + timedelta(seconds=30)):
+            sent_key = f"{today_key}:{field}:{mins_before}"
+            if state["sent"].get(sent_key):
+                continue
 
-    # Build dt objects for begins times for notifications
-    begins = {
-        "Fajr": to_dt(data["fajr_beg"]),
-        "Zuhr": to_dt(data["zuhr_beg"]),
-        "Asr": to_dt(data["asr_beg"]),
-        "Maghrib": to_dt(data["maghrib_beg"]),
-        "Isha": to_dt(data["isha_beg"]),
-    }
+            msg = template.format(time=hhmm)
+            await _post_embed_to_channel(
+                channel_id,
+                title,
+                f"@everyone\n\n{msg}",
+                discord.Color.orange()
+            )
 
-    jamaah = {
-        "Fajr": to_dt(data["fajr_jam"]),
-        "Zuhr": to_dt(data["zuhr_jam"]),
-        "Asr": to_dt(data["asr_jam"]),
-        "Maghrib": to_dt(data["maghrib_jam"]),
-        "Isha": to_dt(data["isha_jam"]),
-    }
+            state["sent"][sent_key] = True
+            save_ramadan_state(state)
 
-    return {
-        "date": date_str,
-        "hijri": hijri,
-        "raw": data,
-        "begins": begins,
-        "jamaah": jamaah,
-    }
+@bot.command(name="bic", help="Show BIC Ramadan times for today.")
+async def bic(ctx: commands.Context):
+    cfg = load_ramadan_config()
+    tz = ZoneInfo(cfg.get("timezone", BIC_TIMEZONE))
+    today_key = datetime.now(tz).date().isoformat()
+    entry = cfg["days"].get(today_key)
+    if not entry:
+        return await ctx.send("❌ No timetable entry found for today in the JSON file.")
+
+    desc = format_day_text(cfg, entry, today_key)
+    embed = discord.Embed(title="🕌 BIC Ramadan Times (Today)", description=desc, color=discord.Color.gold())
+    await ctx.send(embed=embed)
+
 
 # =========================
 # Snake (reaction + command controls)
@@ -2839,78 +2721,6 @@ async def cover_leave(ctx: commands.Context):
     except discord.HTTPException as e:
         await ctx.send(f"⚠️ Failed to remove: {type(e).__name__}. Try again later.")
 
-@bot.command(name="prayer", help="Show what prayer time we're in now + what's next (ELM times).")
-async def prayer(ctx):
-    try:
-        today = await fetch_elm_today()
-    except Exception:
-        return await ctx.send("⚠️ Couldn’t fetch ELM prayer times right now. Try again in a bit.")
-
-    now = datetime.now(LONDON_TZ)
-    begins = today["begins"]
-
-    # Order of prayers for the day
-    order = ["Fajr", "Zuhr", "Asr", "Maghrib", "Isha"]
-    times = [(p, begins[p]) for p in order]
-    times.sort(key=lambda x: x[1])
-
-    current_prayer = None
-    next_prayer = None
-
-    for i, (p, t) in enumerate(times):
-        nxt = times[i + 1][0] if i + 1 < len(times) else None
-        nxt_t = times[i + 1][1] if i + 1 < len(times) else None
-
-        if now >= t and (nxt_t is None or now < nxt_t):
-            current_prayer = p
-            next_prayer = nxt
-            next_time = nxt_t
-            break
-
-    # If it's after Isha begins, next is tomorrow's Fajr (we’ll just label it)
-    if current_prayer is None and now < begins["Fajr"]:
-        current_prayer = "Before Fajr"
-        next_prayer = "Fajr"
-        next_time = begins["Fajr"]
-    elif current_prayer == "Isha" and next_prayer is None:
-        next_prayer = "Fajr (tomorrow)"
-        next_time = None
-
-    embed = discord.Embed(title="🕌 Prayer Status (ELM)", color=discord.Color.purple())
-    embed.add_field(name="Date", value=f"{today['date']} • {today['hijri']}", inline=False)
-
-    if current_prayer and current_prayer != "Before Fajr":
-        embed.add_field(
-            name="You can pray now",
-            value=f"✅ **{current_prayer}** (began {begins[current_prayer].strftime('%H:%M')})",
-            inline=False
-        )
-    else:
-        embed.add_field(name="You can pray now", value="⏳ Not in a prayer window yet (before Fajr).", inline=False)
-
-    if next_prayer == "Fajr (tomorrow)":
-        embed.add_field(name="Next prayer", value="➡️ **Fajr (tomorrow)**", inline=False)
-    else:
-        remaining = int((next_time - now).total_seconds()) if next_time else None
-        if remaining is not None:
-            h = remaining // 3600
-            m = (remaining % 3600) // 60
-            embed.add_field(
-                name="Next prayer",
-                value=f"➡️ **{next_prayer}** at **{next_time.strftime('%H:%M')}** (in {h}h {m}m)",
-                inline=False
-            )
-
-    # quick table of begins/jamaah
-    lines = []
-    for p in ["Fajr", "Zuhr", "Asr", "Maghrib", "Isha"]:
-        lines.append(
-            f"**{p}:** begins {today['begins'][p].strftime('%H:%M')} • jamā‘ah {today['jamaah'][p].strftime('%H:%M')}"
-        )
-    embed.add_field(name="Today’s times", value="\n".join(lines)[:1024], inline=False)
-
-    await ctx.send(embed=embed)
-
 @bot.command(
     name="baltop",
     help="Show the richest users by total balance (wallet + bank). Usage: !baltop [count]"
@@ -2968,70 +2778,7 @@ async def baltop(ctx, count: int = 10):
         embed.set_footer(text=f"Your rank: {your_rank}/{len(entries)}")
 
     await ctx.send(embed=embed)
-@bot.command(name="ramadan", help="Show today's Ramadan times (BIC).")
-async def ramadan(ctx):
-    now = datetime.now(tz=BIC_TZ)
-    date_key, rec = get_ramadan_day(now)
-    if not rec:
-        return await ctx.send("🌙 Ramadan timetable not available for today.")
-    e = discord.Embed(
-        title="🕌 Barnet Islamic Centre — Ramadan Times (Today)",
-        description=_format_times_block(date_key, rec),
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=e)
 
-@bot.command(name="ramadan_tomorrow", help="Show tomorrow's Ramadan times (BIC).")
-async def ramadan_tomorrow(ctx):
-    now = datetime.now(tz=BIC_TZ) + timedelta(days=1)
-    date_key, rec = get_ramadan_day(now)
-    if not rec:
-        return await ctx.send("🌙 Ramadan timetable not available for tomorrow.")
-    e = discord.Embed(
-        title="🕌 Barnet Islamic Centre — Ramadan Times (Tomorrow)",
-        description=_format_times_block(date_key, rec),
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=e)
-
-@bot.command(name="ramadan_full", help="Show all Ramadan days in the JSON (compact).")
-async def ramadan_full(ctx):
-    data = load_ramadan()
-    days = data.get("days", {})
-    if not days:
-        return await ctx.send("❌ No Ramadan JSON loaded.")
-    lines = []
-    for k in sorted(days.keys()):
-        rec = days[k]
-        lines.append(f"**{k}** — Sehri `{rec['sehri_end']}` · Iftar `{rec['iftar']}` · Taraweeh `{rec['taraweeh']}`")
-    # Discord message limit safety
-    msg = "\n".join(lines)
-    if len(msg) > 1800:
-        msg = msg[:1800] + "\n... (too long)"
-    await ctx.send(msg)
-
-@bot.command(name="ramadan_toggle", help="Toggle reminders. Usage: !ramadan_toggle suhoor|iftar|taraweeh|daily on|off")
-@commands.has_permissions(administrator=True)
-async def ramadan_toggle(ctx, which: str, state: str):
-    global ENABLE_SUHOOR_WARN, ENABLE_IFTAR_WARN, ENABLE_TARAWEEH_WARN, ENABLE_DAILY_RAMADAN_POST, ENABLE_DAILY_DUA_POST
-
-    which = which.lower().strip()
-    state = state.lower().strip()
-    on = state in ("on", "true", "yes", "1")
-
-    if which == "suhoor":
-        ENABLE_SUHOOR_WARN = on
-    elif which == "iftar":
-        ENABLE_IFTAR_WARN = on
-    elif which == "taraweeh":
-        ENABLE_TARAWEEH_WARN = on
-    elif which == "daily":
-        ENABLE_DAILY_RAMADAN_POST = on
-        ENABLE_DAILY_DUA_POST = on
-    else:
-        return await ctx.send("❌ which must be: suhoor | iftar | taraweeh | daily")
-
-    await ctx.send(f"✅ `{which}` set to **{('ON' if on else 'OFF')}**")
 
 # =========================
 # Message events (AFK + XP)
@@ -3200,135 +2947,12 @@ async def pay_dividends():
         if channel:
             await channel.send("💸 Dividends have been paid out to all shareholders!")
 
-@tasks.loop(seconds=20)
-async def prayer_time_notifier():
-    await bot.wait_until_ready()
-    channel = bot.get_channel(PRAYER_UPDATES_CHANNEL_ID)
-    if not channel:
-        return
-
-    # Load today’s times
-    try:
-        today = await fetch_elm_today()
-    except Exception:
-        return  # fail silently; you can log if you want
-
-    now = datetime.now(LONDON_TZ)
-    date_key = now.strftime("%Y-%m-%d")
-
-    state = _load_state(PRAYER_NOTIF_STATE_FILE, {"date": None, "sent": {}})
-
-    # Reset state if new day
-    if state.get("date") != date_key:
-        state = {"date": date_key, "sent": {}}
-
-    # Notify once per prayer
-    for prayer, t in today["begins"].items():
-        # fire when we are within a small window after start
-        if now >= t and (now - t).total_seconds() <= 90:
-            if state["sent"].get(prayer):
-                continue
-
-            jam = today["jamaah"][prayer].strftime("%H:%M")
-            beg = t.strftime("%H:%M")
-
-            embed = discord.Embed(
-                title="🕌 Prayer Time",
-                description=f"**{prayer}** has begun (**{beg}**).\nJamā‘ah at **{jam}**.",
-                color=discord.Color.blue()
-            )
-            embed.set_footer(text=f"ELM • {today['date']} • {today['hijri']}")
-            await channel.send(embed=embed)
-
-            state["sent"][prayer] = True
-            _save_state(PRAYER_NOTIF_STATE_FILE, state)
-
-@tasks.loop(minutes=5)
-async def ramadan_daily_iftar_post():
-    await bot.wait_until_ready()
-    channel = bot.get_channel(PRAYER_UPDATES_CHANNEL_ID)
-    if not channel:
-        return
-
-    now = datetime.now(LONDON_TZ)
-    date_key = now.strftime("%Y-%m-%d")
-
-    state = _load_state(RAMADAN_POST_STATE_FILE, {"date": None})
-
-    # Post once per day, in the morning (adjust hour if you want)
-    if state.get("date") == date_key:
-        return
-    if now.hour < 8:  # don’t post before 8am
-        return
-
-    try:
-        today = await fetch_elm_today()
-    except Exception:
-        return
-
-    iftar_time = today["begins"]["Maghrib"].strftime("%H:%M")
-
-    embed = discord.Embed(
-        title="🌙 Ramadan Update",
-        description=f"**Iftar (Maghrib begins): {iftar_time}**\n\nTimetable:",
-        color=discord.Color.gold()
-    )
-    # show the timetable image if the URL is valid
-    if RAMADAN_TIMETABLE_IMAGE_URL:
-        embed.set_image(url=RAMADAN_TIMETABLE_IMAGE_URL)
-
-    embed.set_footer(text=f"ELM • {today['date']} • {today['hijri']}")
-    await channel.send(embed=embed)
-
-    _save_state(RAMADAN_POST_STATE_FILE, {"date": date_key})
-
-@tasks.loop(seconds=30)
-async def ramadan_daily_posts_loop():
-    await bot.wait_until_ready()
-
-    now = datetime.now(tz=BIC_TZ)
-    date_key, rec = get_ramadan_day(now)
-    if not rec:
-        return
-
-    # only at the scheduled time window
-    is_time = (now.hour == DAILY_POST_HOUR and now.minute == DAILY_POST_MINUTE and now.second < 30)
-    if not is_time:
-        return
-
-    # Morning Ramadan post
-    if ENABLE_DAILY_RAMADAN_POST:
-        k = _sent_key(date_key, "daily_ramadan")
-        if k not in RAMADAN_SENT:
-            RAMADAN_SENT.add(k)
-            e = discord.Embed(
-                title="🕌 Ramadan Times Today — Barnet Islamic Centre",
-                description=_format_times_block(date_key, rec),
-                color=discord.Color.green()
-            )
-            e.set_footer(text="May Allah accept your fasting 🤲")
-            await ramadan_send(embed=e)
-
-    # Daily dua post
-    if ENABLE_DAILY_DUA_POST:
-        k = _sent_key(date_key, "daily_dua")
-        if k not in RAMADAN_SENT:
-            RAMADAN_SENT.add(k)
-            title, dua = pick_daily_dua(date_key)
-            e = discord.Embed(
-                title=f"🤲 Daily Dua — {title}",
-                description=dua,
-                color=discord.Color.teal()
-            )
-            await ramadan_send(embed=e)
-
 # =========================
 # Ready
 # =========================
 @bot.event
 async def on_ready():
     print(f"{bot.user} is online and ready!")
-
     if not apply_bank_interest.is_running():
         apply_bank_interest.start()
     if not update_stock_prices.is_running():
@@ -3336,11 +2960,9 @@ async def on_ready():
     if not pay_dividends.is_running():
         pay_dividends.start()
 
-    # Ramadan add-ons
-    if not ramadan_reminder_loop.is_running():
-        ramadan_reminder_loop.start()
-    if not ramadan_daily_posts_loop.is_running():
-        ramadan_daily_posts_loop.start()
+    # ✅ Ramadan timetable task
+    if not ramadan_bic_scheduler.is_running():
+        ramadan_bic_scheduler.start()
 
 # =========================
 # Boot
