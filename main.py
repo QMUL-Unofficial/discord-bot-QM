@@ -733,22 +733,30 @@ async def prayer(ctx: commands.Context):
         return await ctx.send("❌ No timetable entry found for today.")
 
     # --- helpers ---
-    def normalize_hhmm(hhmm: str) -> str:
-        # file has "5:31" sometimes; convert to "05:31"
+    def normalize_hhmm(hhmm: str) -> tuple[int, int]:
         hhmm = str(hhmm).strip()
-        if ":" not in hhmm:
-            return hhmm
         h, m = hhmm.split(":")
-        return f"{int(h):02d}:{int(m):02d}"
+        return int(h), int(m)
+    
+    def to_dt(prayer_name: str, hhmm: str) -> datetime:
+        h, m = normalize_hhmm(hhmm)
+    
+        # Convert PM prayers if they look like 1–7 etc.
+        # (Zuhr sometimes "1:00" meaning 13:00)
+        if prayer_name in ("Zuhr", "Asr", "Maghrib", "Isha"):
+            if h < 12:
+                h += 12
+    
+        return datetime(now.year, now.month, now.day, h, m, 0, tzinfo=tz)
+    
+    def display_time(prayer_name: str, hhmm: str) -> str:
+        # show in 24h for consistency
+        h, m = normalize_hhmm(hhmm)
+        if prayer_name in ("Zuhr", "Asr", "Maghrib", "Isha"):
+            if h < 12:
+                h += 12
+        return f"{h:02d}:{m:02d}"
 
-    def to_dt(hhmm: str) -> datetime:
-        hhmm = normalize_hhmm(hhmm)
-        h, m = hhmm.split(":")
-        return datetime(
-            now.year, now.month, now.day,
-            int(h), int(m), 0,
-            tzinfo=tz
-        )
 
     def human_left(seconds: int) -> str:
         seconds = max(0, int(seconds))
@@ -760,12 +768,15 @@ async def prayer(ctx: commands.Context):
 
     # --- 5 daily prayers from BIC jama'ah times ---
     prayers = [
-        ("Fajr",      entry.get("fajr_jamaah")),
-        ("Zuhr",      entry.get("zuhr_jamaah")),
-        ("Asr",       entry.get("asr_jamaah")),
-        ("Maghrib",   entry.get("maghrib_jamaah")),
-        ("Isha",      entry.get("isha_jamaah")),
+        ("Fajr",    entry.get("fajr_jamaah")),
+        ("Zuhr",    entry.get("zuhr_jamaah")),
+        ("Asr",     entry.get("asr_jamaah")),
+        ("Maghrib", entry.get("maghrib_jamaah")),
+        ("Isha",    entry.get("isha_jamaah")),
     ]
+    
+    dt = [(name, to_dt(name, t), display_time(name, t)) for name, t in prayers]
+    dt.sort(key=lambda x: x[1])
 
     # Ensure all exist
     missing = [name for name, t in prayers if not t]
