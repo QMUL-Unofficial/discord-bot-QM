@@ -733,38 +733,25 @@ async def prayer(ctx: commands.Context):
         return await ctx.send("❌ No timetable entry found for today.")
 
     # --- helpers ---
-    def normalize_hhmm(hhmm: str) -> tuple[int, int]:
-        hhmm = str(hhmm).strip()
-        h, m = hhmm.split(":")
-        return int(h), int(m)
-    
-    def to_dt(prayer_name: str, hhmm: str) -> datetime:
-        h, m = normalize_hhmm(hhmm)
-    
-        # Convert PM prayers if they look like 1–7 etc.
-        # (Zuhr sometimes "1:00" meaning 13:00)
-        if prayer_name in ("Zuhr", "Asr", "Maghrib", "Isha"):
-            if h < 12:
-                h += 12
-    
-        return datetime(now.year, now.month, now.day, h, m, 0, tzinfo=tz)
-    
-    def display_time(prayer_name: str, hhmm: str) -> str:
-        # show in 24h for consistency
-        h, m = normalize_hhmm(hhmm)
-        if prayer_name in ("Zuhr", "Asr", "Maghrib", "Isha"):
-            if h < 12:
-                h += 12
-        return f"{h:02d}:{m:02d}"
+def normalize_hhmm(hhmm: str) -> tuple[int, int]:
+    hhmm = str(hhmm).strip()
+    h, m = hhmm.split(":")
+    return int(h), int(m)
 
+def to_dt(prayer_name: str, hhmm: str) -> datetime:
+    h, m = normalize_hhmm(hhmm)
+    if prayer_name in ("Zuhr", "Asr", "Maghrib", "Isha"):
+        if h < 12:
+            h += 12
+    return datetime(now.year, now.month, now.day, h, m, 0, tzinfo=tz)
 
-    def human_left(seconds: int) -> str:
-        seconds = max(0, int(seconds))
-        h = seconds // 3600
-        m = (seconds % 3600) // 60
-        if h:
-            return f"{h}h {m}m"
-        return f"{m}m"
+def display_time(prayer_name: str, hhmm: str) -> str:
+    h, m = normalize_hhmm(hhmm)
+    if prayer_name in ("Zuhr", "Asr", "Maghrib", "Isha"):
+        if h < 12:
+            h += 12
+    return f"{h:02d}:{m:02d}"
+
 
     # --- 5 daily prayers from BIC jama'ah times ---
     prayers = [
@@ -777,7 +764,7 @@ async def prayer(ctx: commands.Context):
     
     dt = [(name, to_dt(name, t), display_time(name, t)) for name, t in prayers]
     dt.sort(key=lambda x: x[1])
-
+    
     # Ensure all exist
     missing = [name for name, t in prayers if not t]
     if missing:
