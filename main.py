@@ -56,6 +56,7 @@ SUGGESTION_FILE = "suggestions.json"
 TRIVIA_STATS_FILE = "trivia_stats.json"
 TRIVIA_STREAKS_FILE = "trivia_streaks.json"
 BEG_STATS_FILE = "beg_stats.json"
+SWEAR_JAR_FILE = "swear_jar.json"
 
 # =========================
 # Ramadan Timetable Addon (BIC)
@@ -158,10 +159,6 @@ energy = "🍎"
 snakeHead = "😍"
 snakeBody = "🟨"
 snakeLoose = "😵"
-
-
-
-SWEAR_JAR_FILE = "swear_jar.json"
 
 # Fine settings (optional)
 SWEAR_FINE_ENABLED = True
