@@ -92,6 +92,7 @@ PACKAGE_FILES = [
     "beg_stats.json",
     "prayer_notif_state.json",
     "ramadan_post_state.json",
+    "swear_jar.json",
 ]
 
 # Economy / Items
