@@ -3144,7 +3144,8 @@ async def on_message(message: discord.Message):
             if now_ts - last_ts >= SWEAR_COUNT_COOLDOWN:
                 matches = SWEAR_RE.findall(message.content or "")
                 swear_count = len(matches)
-
+                print(f"[SwearJar] {message.author} -> {matches} ({swear_count}) | content={message.content!r}")
+                
                 if swear_count > 0:
                     _LAST_SWEAR_COUNT_AT[message.author.id] = now_ts
                     add_swears(message.author.id, swear_count)
