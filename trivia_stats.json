@@ -14,7 +14,7 @@
         },
         "Film_And_Tv": {
             "correct": 14,
-            "attempts": 35
+            "attempts": 36
         },
         "Food_And_Drink": {
             "correct": 13,
@@ -43,86 +43,86 @@
     },
     "1400876118587871302": {
         "Film_And_Tv": {
-            "correct": 42,
-            "attempts": 100
+            "correct": 58,
+            "attempts": 143
         },
         "Music": {
-            "correct": 45,
-            "attempts": 89
+            "correct": 63,
+            "attempts": 120
         },
         "Arts_And_Literature": {
-            "correct": 38,
-            "attempts": 95
+            "correct": 46,
+            "attempts": 122
         },
         "Science": {
-            "correct": 50,
-            "attempts": 84
+            "correct": 75,
+            "attempts": 117
         },
         "Society_And_Culture": {
-            "correct": 56,
-            "attempts": 91
+            "correct": 70,
+            "attempts": 123
         },
         "History": {
-            "correct": 35,
-            "attempts": 71
+            "correct": 46,
+            "attempts": 107
         },
         "Food_And_Drink": {
-            "correct": 31,
-            "attempts": 51
+            "correct": 44,
+            "attempts": 78
         },
         "Geography": {
-            "correct": 44,
-            "attempts": 71
+            "correct": 68,
+            "attempts": 112
         },
         "Sport_And_Leisure": {
-            "correct": 16,
-            "attempts": 34
+            "correct": 22,
+            "attempts": 52
         },
         "General_Knowledge": {
-            "correct": 14,
-            "attempts": 27
+            "correct": 21,
+            "attempts": 36
         }
     },
     "804277913833701397": {
         "Music": {
-            "correct": 7,
-            "attempts": 18
+            "correct": 38,
+            "attempts": 67
         },
         "Science": {
-            "correct": 10,
-            "attempts": 17
+            "correct": 41,
+            "attempts": 68
         },
         "Film_And_Tv": {
-            "correct": 8,
-            "attempts": 22
+            "correct": 33,
+            "attempts": 87
         },
         "Food_And_Drink": {
-            "correct": 8,
-            "attempts": 15
+            "correct": 31,
+            "attempts": 59
         },
         "Arts_And_Literature": {
-            "correct": 10,
-            "attempts": 21
+            "correct": 31,
+            "attempts": 83
         },
         "Society_And_Culture": {
-            "correct": 7,
-            "attempts": 17
+            "correct": 46,
+            "attempts": 76
         },
         "Geography": {
-            "correct": 6,
-            "attempts": 19
+            "correct": 32,
+            "attempts": 76
         },
         "General_Knowledge": {
-            "correct": 4,
-            "attempts": 6
+            "correct": 9,
+            "attempts": 20
         },
         "Sport_And_Leisure": {
-            "correct": 2,
-            "attempts": 4
+            "correct": 10,
+            "attempts": 33
         },
         "History": {
-            "correct": 1,
-            "attempts": 5
+            "correct": 22,
+            "attempts": 60
         }
     },
     "533391601452580874": {
@@ -132,11 +132,11 @@
         },
         "Music": {
             "correct": 1,
-            "attempts": 2
+            "attempts": 3
         },
         "Society_And_Culture": {
             "correct": 0,
-            "attempts": 1
+            "attempts": 2
         },
         "Science": {
             "correct": 1,
@@ -147,6 +147,14 @@
             "attempts": 1
         },
         "Geography": {
+            "correct": 0,
+            "attempts": 2
+        },
+        "History": {
+            "correct": 0,
+            "attempts": 2
+        },
+        "General_Knowledge": {
             "correct": 0,
             "attempts": 1
         }
