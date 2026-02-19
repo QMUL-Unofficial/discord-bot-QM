@@ -3143,24 +3143,23 @@ async def on_message(message: discord.Message):
         return
 
     # =========================
-    # Swear Jar (guild only)
+    # 🫙 Swear Jar (guild only)
     # =========================
     if message.guild:
         try:
             now_ts = time.time()
             last_ts = _LAST_SWEAR_COUNT_AT.get(message.author.id, 0)
 
-            # simple anti-spam so one person can't inflate it instantly
+            # Anti-spam cooldown
             if now_ts - last_ts >= SWEAR_COUNT_COOLDOWN:
                 matches = SWEAR_RE.findall(message.content or "")
                 swear_count = len(matches)
-                print(f"[SwearJar] {message.author} -> {matches} ({swear_count}) | content={message.content!r}")
-                
+
                 if swear_count > 0:
                     _LAST_SWEAR_COUNT_AT[message.author.id] = now_ts
                     add_swears(message.author.id, swear_count)
 
-                    # Optional: fine coins per swear (clamped so wallet can't go negative)
+                    # 💰 Optional fine
                     if SWEAR_FINE_ENABLED and SWEAR_FINE_AMOUNT > 0:
                         coins = ensure_user_coins(message.author.id)
                         uid = str(message.author.id)
@@ -3171,22 +3170,28 @@ async def on_message(message: discord.Message):
                         coins[uid]["wallet"] = wallet - taken
                         save_coins(coins)
 
-                    # Optional: quick feedback (keep commented for silent tracking)
-                    # await message.channel.send(
-                    #     f"🫙 Swear jar: {message.author.mention} +{swear_count}",
-                    #     delete_after=4
-                    # )
+                    # 🫙 Feedback message (auto deletes)
+                    jar = load_swear_jar()
+                    total = jar.get("total", 0)
+
+                    await message.channel.send(
+                        f"🫙 {message.author.mention} added **{swear_count}** coin(s) to the swear jar! "
+                        f"Server total: **{total}**",
+                        delete_after=5
+                    )
+
         except Exception as e:
             print(f"[SwearJar] failed: {type(e).__name__}: {e}")
 
     # =========================
-    # Word filter: "pathical"
+    # 🚫 Word filter: "pathical"
     # =========================
     if message.guild and "pathical" in (message.content or "").lower():
         try:
             await message.delete()
         except discord.Forbidden:
             pass
+
         await message.channel.send(
             f"{message.author.mention} stop being a bum 😭",
             delete_after=5
@@ -3194,12 +3199,12 @@ async def on_message(message: discord.Message):
         return  # stop further processing
 
     # =========================
-    # AFK + XP (guild only)
+    # 💤 AFK + XP (guild only)
     # =========================
     if message.guild:
         key = f"{message.guild.id}-{message.author.id}"
 
-        # Clear AFK if the author speaks
+        # Remove AFK if user speaks
         if key in AFK_STATUS:
             del AFK_STATUS[key]
             await message.channel.send(embed=discord.Embed(
@@ -3207,7 +3212,7 @@ async def on_message(message: discord.Message):
                 color=discord.Color.red()
             ))
 
-        # Notify if they mention someone AFK
+        # Notify if mentioning AFK users
         for user in message.mentions:
             mention_key = f"{message.guild.id}-{user.id}"
             if mention_key in AFK_STATUS:
@@ -3217,13 +3222,15 @@ async def on_message(message: discord.Message):
                     color=discord.Color.purple()
                 ))
 
-        # XP (don’t block commands on errors)
+        # XP update (non-blocking)
         try:
             await update_xp(message.author.id, message.guild.id, XP_PER_MESSAGE)
         except Exception as e:
             print(f"[XP] update_xp failed: {type(e).__name__}: {e}")
 
-    # ✅ ALWAYS process commands (guilds + DMs)
+    # =========================
+    # ✅ Always process commands
+    # =========================
     await bot.process_commands(message)
 
 # =========================
