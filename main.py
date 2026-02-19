@@ -389,7 +389,15 @@ async def mc(ctx: commands.Context):
 # =========================
 
 def load_swear_jar():
-    return _load_json(SWEAR_JAR_FILE, {"total": 0, "users": {}})
+    jar = _load_json(SWEAR_JAR_FILE, {})
+    # Repair structure
+    if not isinstance(jar, dict):
+        jar = {}
+    if "total" not in jar or not isinstance(jar.get("total"), int):
+        jar["total"] = int(jar.get("total", 0) or 0)
+    if "users" not in jar or not isinstance(jar.get("users"), dict):
+        jar["users"] = {}
+    return jar
 
 def save_swear_jar(d):
     _save_json(SWEAR_JAR_FILE, d)
@@ -402,8 +410,10 @@ def add_swears(user_id: int, count: int):
     uid = str(user_id)
 
     jar["total"] = int(jar.get("total", 0)) + count
-    jar["users"].setdefault(uid, {"count": 0})
-    jar["users"][uid]["count"] = int(jar["users"][uid].get("count", 0)) + count
+
+    jar["users"].setdefault(uid, {})
+    jar["users"][uid].setdefault("count", 0)
+    jar["users"][uid]["count"] = int(jar["users"][uid]["count"]) + count
 
     save_swear_jar(jar)
     
