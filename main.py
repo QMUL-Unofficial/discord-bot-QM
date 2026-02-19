@@ -14,6 +14,7 @@ import shutil
 import aiohttp
 from zoneinfo import ZoneInfo
 import zipfile
+import re  # add near the top with imports
 
 # =========================
 # Boot / Config
@@ -157,6 +158,27 @@ energy = "🍎"
 snakeHead = "😍"
 snakeBody = "🟨"
 snakeLoose = "😵"
+
+
+
+SWEAR_JAR_FILE = "swear_jar.json"
+
+# Fine settings (optional)
+SWEAR_FINE_ENABLED = True
+SWEAR_FINE_AMOUNT = 10  # coins per swear (only if enabled)
+
+# Keep this list NON-slur profanity only (add/remove to taste).
+SWEAR_WORDS = {
+    "fuck", "fucking", "shit", "bullshit", "bitch", "asshole", "bastard",
+    "dick", "piss", "crap", "damn", "bloody", "wanker", "twat"
+}
+
+# Precompiled regex: matches whole words only, case-insensitive
+SWEAR_RE = re.compile(r"\b(" + "|".join(map(re.escape, sorted(SWEAR_WORDS, key=len, reverse=True))) + r")\b", re.IGNORECASE)
+
+# Anti-spam: don't count the same user's swears too frequently (seconds)
+SWEAR_COUNT_COOLDOWN = 2
+_LAST_SWEAR_COUNT_AT = {}  # user_id -> unix timestamp
 
 # =========================
 # Minecraft (!mc)
@@ -368,6 +390,25 @@ async def mc(ctx: commands.Context):
 # Utilities: File I/O
 # =========================
 
+def load_swear_jar():
+    return _load_json(SWEAR_JAR_FILE, {"total": 0, "users": {}})
+
+def save_swear_jar(d):
+    _save_json(SWEAR_JAR_FILE, d)
+
+def add_swears(user_id: int, count: int):
+    if count <= 0:
+        return
+
+    jar = load_swear_jar()
+    uid = str(user_id)
+
+    jar["total"] = int(jar.get("total", 0)) + count
+    jar["users"].setdefault(uid, {"count": 0})
+    jar["users"][uid]["count"] = int(jar["users"][uid].get("count", 0)) + count
+
+    save_swear_jar(jar)
+    
 def _existing_files(paths: list[str]) -> list[str]:
     return [p for p in paths if p and os.path.exists(p) and os.path.isfile(p)]
 
@@ -2868,7 +2909,93 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
     role = discord.utils.get(guild.roles, name=role_name)
     if role and role in member.roles:
         await member.remove_roles(role)
+# =========================
+# Swear Jar
+# =========================
+@bot.command(name="swearjar", help="Show swear jar totals. Usage: !swearjar [@user]")
+async def swearjar(ctx, member: discord.Member = None):
+    jar = load_swear_jar()
+    member = member or ctx.author
 
+    uid = str(member.id)
+    user_count = int((jar.get("users") or {}).get(uid, {}).get("count", 0))
+    total = int(jar.get("total", 0))
+
+    embed = discord.Embed(title="🫙 Swear Jar", color=discord.Color.orange())
+    embed.add_field(name="Server total", value=f"**{total}** swears", inline=False)
+    embed.add_field(name=f"{member.display_name}", value=f"**{user_count}** swears", inline=False)
+
+    if SWEAR_FINE_ENABLED:
+        embed.set_footer(text=f"Fine is ON: {SWEAR_FINE_AMOUNT} coins per swear")
+    else:
+        embed.set_footer(text="Fine is OFF (tracking only)")
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="swearleaderboard", help="Top swearers. Usage: !swearleaderboard [count]")
+async def swearleaderboard(ctx, count: int = 10):
+    count = max(3, min(25, int(count)))
+    jar = load_swear_jar()
+    users = (jar.get("users") or {})
+
+    rows = []
+    for uid, rec in users.items():
+        try:
+            c = int(rec.get("count", 0))
+        except Exception:
+            c = 0
+        if c <= 0:
+            continue
+        m = ctx.guild.get_member(int(uid))
+        if not m or m.bot:
+            continue
+        rows.append((m, c))
+
+    if not rows:
+        return await ctx.send("🫙 No swears recorded yet.")
+
+    rows.sort(key=lambda t: t[1], reverse=True)
+
+    lines = []
+    for i, (m, c) in enumerate(rows[:count], start=1):
+        crown = " 👑" if i == 1 else ""
+        you = " ← you" if m.id == ctx.author.id else ""
+        lines.append(f"**{i}.** {m.mention}{crown} — **{c}** swears{you}")
+
+    embed = discord.Embed(title="🫙 Swear Jar Leaderboard", description="\n".join(lines), color=discord.Color.orange())
+    embed.set_footer(text=f"Server total: {int(jar.get('total', 0))}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="swearreset", help="(Admin) Reset swear jar counts.")
+@commands.has_permissions(administrator=True)
+async def swearreset(ctx):
+    save_swear_jar({"total": 0, "users": {}})
+    await ctx.send("🧼 Swear jar has been reset.")
+
+
+@bot.command(name="swearfine", help="(Admin) Toggle/set swear fine. Usage: !swearfine on|off|amount <n>")
+@commands.has_permissions(administrator=True)
+async def swearfine(ctx, mode: str, amount: int = None):
+    global SWEAR_FINE_ENABLED, SWEAR_FINE_AMOUNT
+    mode = (mode or "").lower().strip()
+
+    if mode in ("on", "enable", "enabled"):
+        SWEAR_FINE_ENABLED = True
+        return await ctx.send(f"🫙 Fine is now **ON** ({SWEAR_FINE_AMOUNT} coins per swear).")
+
+    if mode in ("off", "disable", "disabled"):
+        SWEAR_FINE_ENABLED = False
+        return await ctx.send("🫙 Fine is now **OFF** (tracking only).")
+
+    if mode in ("amount", "set", "price"):
+        if amount is None or amount < 0:
+            return await ctx.send("❌ Usage: `!swearfine amount <non-negative number>`")
+        SWEAR_FINE_AMOUNT = int(amount)
+        return await ctx.send(f"🫙 Fine amount set to **{SWEAR_FINE_AMOUNT}** coins per swear.")
+
+    await ctx.send("❌ Usage: `!swearfine on` | `!swearfine off` | `!swearfine amount <n>`")
 # =========================
 # CoverBot
 # =========================
@@ -3007,8 +3134,46 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # ===== Word filter: "pathical" (only in guild channels, not DMs) =====
-    if message.guild and "pathical" in message.content.lower():
+    # =========================
+    # Swear Jar (guild only)
+    # =========================
+    if message.guild:
+        try:
+            now_ts = time.time()
+            last_ts = _LAST_SWEAR_COUNT_AT.get(message.author.id, 0)
+
+            # simple anti-spam so one person can't inflate it instantly
+            if now_ts - last_ts >= SWEAR_COUNT_COOLDOWN:
+                matches = SWEAR_RE.findall(message.content or "")
+                swear_count = len(matches)
+
+                if swear_count > 0:
+                    _LAST_SWEAR_COUNT_AT[message.author.id] = now_ts
+                    add_swears(message.author.id, swear_count)
+
+                    # Optional: fine coins per swear (clamped so wallet can't go negative)
+                    if SWEAR_FINE_ENABLED and SWEAR_FINE_AMOUNT > 0:
+                        coins = ensure_user_coins(message.author.id)
+                        uid = str(message.author.id)
+                        fine = SWEAR_FINE_AMOUNT * swear_count
+
+                        wallet = int(coins[uid].get("wallet", 0))
+                        taken = min(wallet, fine)
+                        coins[uid]["wallet"] = wallet - taken
+                        save_coins(coins)
+
+                    # Optional: quick feedback (keep commented for silent tracking)
+                    # await message.channel.send(
+                    #     f"🫙 Swear jar: {message.author.mention} +{swear_count}",
+                    #     delete_after=4
+                    # )
+        except Exception as e:
+            print(f"[SwearJar] failed: {type(e).__name__}: {e}")
+
+    # =========================
+    # Word filter: "pathical"
+    # =========================
+    if message.guild and "pathical" in (message.content or "").lower():
         try:
             await message.delete()
         except discord.Forbidden:
@@ -3019,9 +3184,13 @@ async def on_message(message: discord.Message):
         )
         return  # stop further processing
 
-    # ===== AFK + XP should only run in guilds =====
+    # =========================
+    # AFK + XP (guild only)
+    # =========================
     if message.guild:
         key = f"{message.guild.id}-{message.author.id}"
+
+        # Clear AFK if the author speaks
         if key in AFK_STATUS:
             del AFK_STATUS[key]
             await message.channel.send(embed=discord.Embed(
@@ -3029,6 +3198,7 @@ async def on_message(message: discord.Message):
                 color=discord.Color.red()
             ))
 
+        # Notify if they mention someone AFK
         for user in message.mentions:
             mention_key = f"{message.guild.id}-{user.id}"
             if mention_key in AFK_STATUS:
@@ -3038,7 +3208,7 @@ async def on_message(message: discord.Message):
                     color=discord.Color.purple()
                 ))
 
-        # Don’t let XP errors block commands
+        # XP (don’t block commands on errors)
         try:
             await update_xp(message.author.id, message.guild.id, XP_PER_MESSAGE)
         except Exception as e:
@@ -3046,24 +3216,6 @@ async def on_message(message: discord.Message):
 
     # ✅ ALWAYS process commands (guilds + DMs)
     await bot.process_commands(message)
-
-@bot.event
-async def on_member_join(member):
-    channel = bot.get_channel(WELCOME_CHANNEL_ID)
-    if channel is None:
-        return
-
-    # Create an embed
-    embed = discord.Embed(
-        title=f"Welcome to QMUL - Unofficial 🎓",
-        description=f"{member.mention}, we're glad to have you here!",
-        color=discord.Color.green()
-    )
-    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
-    embed.set_footer(text="Make sure to check out the channels and have fun!")
-
-    # Send the embed
-    await channel.send(embed=embed)
 
 # =========================
 # Background Tasks
