@@ -2910,14 +2910,14 @@ async def on_message(message: discord.Message):
     # =========================
     # 🚫 Word filter: "pathical"
     # =========================
-    if message.guild and "pathical" in (message.content or "").lower():
+    if message.guild and "rigged" in (message.content or "").lower():
         try:
             await message.delete()
         except discord.Forbidden:
             pass
 
         await message.channel.send(
-            f"{message.author.mention} stop being a bum 😭",
+            f"{message.author.mention} its fair 🔪 ",
             delete_after=5
         )
         return  # stop further processing
