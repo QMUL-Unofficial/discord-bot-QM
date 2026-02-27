@@ -51,8 +51,8 @@
             "attempts": 128
         },
         "Arts_And_Literature": {
-            "correct": 50,
-            "attempts": 132
+            "correct": 56,
+            "attempts": 140
         },
         "Science": {
             "correct": 83,
@@ -213,8 +213,8 @@
             "attempts": 1
         },
         "Arts_And_Literature": {
-            "correct": 1,
-            "attempts": 1
+            "correct": 23,
+            "attempts": 23
         }
     }
 }
