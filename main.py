@@ -415,6 +415,13 @@ async def mc(ctx: commands.Context):
 # Utilities: File I/O
 # =========================
 
+# ---------- NEW async wrappers ----------
+async def _load_json_async(path, default):
+    return await asyncio.to_thread(_load_json, path, default)
+
+async def _save_json_async(path, obj):
+    await asyncio.to_thread(_save_json, path, obj)
+
 def load_swear_jar():
     jar = _load_json(SWEAR_JAR_FILE, {})
     # Repair structure
@@ -631,6 +638,161 @@ def load_beg_stats():
 def save_beg_stats(d):
     _save_json(BEG_STATS_FILE, d)
 
+# ===== DATA (XP/levels) =====
+async def load_data_async():
+    return await _load_json_async(DATA_FILE, {})
+
+async def save_data_async(d):
+    await _save_json_async(DATA_FILE, d)
+
+# ===== COOLDOWNS =====
+async def load_cooldowns_async():
+    return await _load_json_async(COOLDOWN_FILE, {})
+
+async def save_cooldowns_async(d):
+    await _save_json_async(COOLDOWN_FILE, d)
+
+# ===== COINS =====
+async def load_coins_async():
+    return await _load_json_async(COIN_DATA_FILE, {})
+
+async def save_coins_async(d):
+    await _save_json_async(COIN_DATA_FILE, d)
+
+# ===== MARRIAGES =====
+async def load_marriages_async():
+    return await _load_json_async(MARRIAGE_FILE, {})
+
+async def save_marriages_async(d):
+    await _save_json_async(MARRIAGE_FILE, d)
+
+# ===== SHOP STOCK =====
+async def load_shop_stock_async():
+    if not os.path.exists(SHOP_FILE):
+        return {item: 0 for item in SHOP_ITEMS}
+    return await _load_json_async(SHOP_FILE, {item: 0 for item in SHOP_ITEMS})
+
+async def save_shop_stock_async(d):
+    await _save_json_async(SHOP_FILE, d)
+
+# ===== INVENTORY =====
+async def load_inventory_async():
+    return await _load_json_async(INVENTORY_FILE, {})
+
+async def save_inventory_async(d):
+    await _save_json_async(INVENTORY_FILE, d)
+
+# ===== PLAYLISTS =====
+async def load_playlists_async():
+    return await _load_json_async(PLAYLIST_FILE, {})
+
+async def save_playlists_async(d):
+    await _save_json_async(PLAYLIST_FILE, d)
+
+# ===== QUESTS =====
+async def load_quests_async():
+    return await _load_json_async(QUEST_FILE, {})
+
+async def save_quests_async(d):
+    await _save_json_async(QUEST_FILE, d)
+
+# ===== EVENTS =====
+async def load_event_async():
+    return await _load_json_async(EVENT_FILE, {})
+
+async def save_event_async(d):
+    await _save_json_async(EVENT_FILE, d)
+
+# ===== STOCKS =====
+async def save_stocks_async(d):
+    await _save_json_async(STOCK_FILE, d)
+
+async def load_stocks_async():
+    # mirror your sync logic but async
+    if not os.path.exists(STOCK_FILE):
+        data = {
+            "Oreobux": {"price": 100, "history": [100]},
+            "QMkoin": {"price": 150, "history": [150]},
+            "Seelsterling": {"price": 200, "history": [200]},
+            "Fwizfinance": {"price": 250, "history": [250]},
+        }
+        await save_stocks_async(data)
+        return data
+
+    data = await _load_json_async(STOCK_FILE, {})
+    changed = False
+    template = {
+        "Oreobux": {"price": 100, "history": [100]},
+        "QMkoin": {"price": 150, "history": [150]},
+        "Seelsterling": {"price": 200, "history": [200]},
+        "Fwizfinance": {"price": 250, "history": [250]},
+    }
+    fixed = {}
+
+    for key in STOCKS:
+        entry = data.get(key)
+        if not entry:
+            # try wrong-cased keys
+            for k in data.keys():
+                if k.lower() == key.lower():
+                    entry = data[k]
+                    changed = True
+                    break
+
+        if not entry or "price" not in entry or "history" not in entry:
+            fixed[key] = template.get(key, {"price": 100, "history": [100]})
+            changed = True
+        else:
+            fixed[key] = entry
+
+    if changed:
+        await save_stocks_async(fixed)
+
+    return fixed
+
+# ===== SUGGESTIONS =====
+async def load_suggestions_async():
+    return await _load_json_async(SUGGESTION_FILE, [])
+
+async def save_suggestions_async(d):
+    await _save_json_async(SUGGESTION_FILE, d)
+
+# ===== TRIVIA STATS =====
+async def load_trivia_stats_async():
+    return await _load_json_async(TRIVIA_STATS_FILE, {})
+
+async def save_trivia_stats_async(d):
+    await _save_json_async(TRIVIA_STATS_FILE, d)
+
+# ===== TRIVIA STREAKS =====
+async def load_trivia_streaks_async():
+    return await _load_json_async(TRIVIA_STREAKS_FILE, {})
+
+async def save_trivia_streaks_async(d):
+    await _save_json_async(TRIVIA_STREAKS_FILE, d)
+
+# ===== BEG STATS =====
+async def load_beg_stats_async():
+    return await _load_json_async(BEG_STATS_FILE, {})
+
+async def save_beg_stats_async(d):
+    await _save_json_async(BEG_STATS_FILE, d)
+
+# ===== SWEAR JAR =====
+async def load_swear_jar_async():
+    jar = await _load_json_async(SWEAR_JAR_FILE, {})
+    # Repair structure (same as sync)
+    if not isinstance(jar, dict):
+        jar = {}
+    if "total" not in jar or not isinstance(jar.get("total"), int):
+        jar["total"] = int(jar.get("total", 0) or 0)
+    if "users" not in jar or not isinstance(jar.get("users"), dict):
+        jar["users"] = {}
+    return jar
+
+async def save_swear_jar_async(d):
+    await _save_json_async(SWEAR_JAR_FILE, d)
+    
 # =========================
 # Snake (reaction + command controls)
 # =========================
@@ -878,6 +1040,9 @@ def only_mention_target(ctx) -> int | None:
         return None
     return ctx.message.mentions[0].id
 
+async def ensure_user_coins_async(user_id):
+    return await asyncio.to_thread(ensure_user_coins, user_id)
+
 # =========================
 # Trivia
 # =========================
@@ -963,7 +1128,7 @@ async def trivia(ctx):
         streak_bonus = 5 * min(streak - 1, 10)  # cap bonus after 10 steps
         reward = reward_base + streak_bonus
 
-        coins = ensure_user_coins(ctx.author.id)
+        coins = await ensure_user_coins_async(uid)
         coins[uid]["wallet"] += reward
         save_coins(coins)
         await update_xp(ctx.author.id, ctx.guild.id, 20)
