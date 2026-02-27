@@ -28,7 +28,6 @@ COVER_BOT_ID = 684773505157431347
 COVER_INVITE_URL = "https://top.gg/bot/684773505157431347/invite?campaign=210-3"
 RESTRICT_GUILD_NAME = "QMUL - Unofficial"
 MONEY_LOCKS = defaultdict(asyncio.Lock)
-ALWAYS_BANKROB_USER_ID = 734468552903360594  # always succeed on !bankrob for this user
 BANKROB_STEAL_MIN_PCT = 0.12   # 12% lower bound
 BANKROB_STEAL_MAX_PCT = 0.28   # 28% upper bound
 BANKROB_MIN_STEAL     = 100    # absolute minimum when success (matches your 100 bank threshold)
@@ -58,10 +57,10 @@ TRIVIA_STREAKS_FILE = "trivia_streaks.json"
 BEG_STATS_FILE = "beg_stats.json"
 SWEAR_JAR_FILE = "swear_jar.json"
 
-ANNOUNCEMENT_CHANNEL_ID = 1433248053665726547
-WELCOME_CHANNEL_ID = 1433248053665726546
-MARKET_ANNOUNCE_CHANNEL_ID = 1433412796531347586
-SUGGESTION_CHANNEL_ID = 1433413006842396682  # set to your #suggestions channel
+ANNOUNCEMENT_CHANNEL_ID = 1477047361749520516
+WELCOME_CHANNEL_ID = 1477047423284281435
+MARKET_ANNOUNCE_CHANNEL_ID = 1477047525902123199
+SUGGESTION_CHANNEL_ID = 1477047592910196756  # set to your #suggestions channel
 
 TOP_ROLE_NAME = "🌟 EXP Top"
 
@@ -99,6 +98,43 @@ CRASH_TOKEN_NAME = "Crash token"  # normalize on this
 # Stocks (consistent casing everywhere)
 STOCKS = ["Oreobux", "QMkoin", "Seelsterling", "Fwizfinance", "BingBux"]
 STOCK_PURCHASE_COUNT = {stock: 0 for stock in STOCKS}
+
+# =========================
+# Gambling Fees / No-Show Rake
+# =========================
+GAMBLE_FEE_FLAT = 25      # fixed fee charged per gamble attempt
+GAMBLE_FEE_RATE = 0.00    # optional percent fee (0.02 = 2%). keep 0 if you want only flat
+
+GAMBLE_TIMEOUT_RAKE_RATE = 0.10  # 10% of bet if you don't react in time
+
+# =========================
+# Stock Market Realism / Balance
+# =========================
+
+# Settlement delay: bought shares are "pending" and not sellable until settled.
+STOCK_SETTLEMENT_SECONDS = 10 * 60  # 30 minutes (change to 3600 for 1h, 86400 for 1 day)
+
+# Per-stock cooldown between trades by the same user
+STOCK_TRADE_COOLDOWN_SECONDS = 5 * 60  # 5 minutes
+
+# Daily trade limit per user (buy+sell)
+STOCK_DAILY_TRADE_LIMIT = 20
+
+# Market friction
+STOCK_SPREAD_BPS = 200  # 200 bps = 2.00% total spread (buy above mid, sell below mid)
+STOCK_FEE_FLAT = 10     # flat fee per trade
+STOCK_FEE_RATE = 0.01   # 1% fee on gross trade value
+
+# Slippage / price impact (bigger orders -> worse fill)
+# Larger = more slippage. Think of it as "market depth".
+STOCK_LIQUIDITY = {
+    "Oreobux": 2000,
+    "QMkoin":  1600,
+    "Seelsterling": 1200,
+    "Fwizfinance": 1000,
+    "BingBux": 1800,
+}
+STOCK_MAX_IMPACT = 0.05  # cap slippage at 5%
 
 # Blackjack (solo + placeholder for future lobbies)
 SOLO_BLACKJACK_GAMES = {}
@@ -1069,9 +1105,130 @@ async def trivialeaderboard(ctx, metric: str = "correct", min_attempts: int = 1,
 # =========================
 # Economy helpers
 # =========================
+
+def _utc_now_ts() -> float:
+    return datetime.now(timezone.utc).timestamp()
+
+def _today_utc_key() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def _ensure_stock_fields(user: dict):
+    """
+    Ensures user dict has the new stock-market fields.
+    portfolio = SELLABLE settled shares
+    pending_portfolio = list of lots waiting for settlement
+    trade_meta = cooldown + daily limit tracking
+    """
+    user.setdefault("portfolio", {s: 0 for s in STOCKS})
+    for s in STOCKS:
+        user["portfolio"].setdefault(s, 0)
+
+    user.setdefault("pending_portfolio", [])  # list of {"stock": str, "shares": int, "buy_price": int, "settles_at": float}
+    if not isinstance(user["pending_portfolio"], list):
+        user["pending_portfolio"] = []
+
+    user.setdefault("trade_meta", {})
+    tm = user["trade_meta"]
+    tm.setdefault("last_trade_ts", {})  # stock -> ts
+    tm.setdefault("daily", {"day": _today_utc_key(), "count": 0})
+
+def _settle_pending_for_user(user: dict) -> int:
+    """
+    Moves any pending lots that have settled into sellable portfolio.
+    Returns number of shares settled (total across all stocks).
+    """
+    _ensure_stock_fields(user)
+    now = _utc_now_ts()
+    pending = user["pending_portfolio"]
+    if not pending:
+        return 0
+
+    still_pending = []
+    settled_total = 0
+
+    for lot in pending:
+        try:
+            if float(lot.get("settles_at", 0)) <= now:
+                stock = lot.get("stock")
+                shares = int(lot.get("shares", 0))
+                if stock in STOCKS and shares > 0:
+                    user["portfolio"][stock] = int(user["portfolio"].get(stock, 0)) + shares
+                    settled_total += shares
+            else:
+                still_pending.append(lot)
+        except Exception:
+            # if lot is malformed, keep it pending to avoid deleting data unexpectedly
+            still_pending.append(lot)
+
+    user["pending_portfolio"] = still_pending
+    return settled_total
+
+def _reset_daily_if_needed(user: dict):
+    _ensure_stock_fields(user)
+    day = _today_utc_key()
+    daily = user["trade_meta"]["daily"]
+    if daily.get("day") != day:
+        daily["day"] = day
+        daily["count"] = 0
+
+def _check_trade_limits(user: dict, stock: str) -> tuple[bool, str]:
+    """
+    Returns (ok, error_message).
+    """
+    _ensure_stock_fields(user)
+    _reset_daily_if_needed(user)
+
+    # Daily limit
+    used = int(user["trade_meta"]["daily"].get("count", 0))
+    if used >= STOCK_DAILY_TRADE_LIMIT:
+        return False, f"❌ Daily trade limit reached (**{STOCK_DAILY_TRADE_LIMIT}**). Try tomorrow (UTC)."
+
+    # Cooldown per stock
+    last_ts = float(user["trade_meta"]["last_trade_ts"].get(stock, 0))
+    now = _utc_now_ts()
+    if now - last_ts < STOCK_TRADE_COOLDOWN_SECONDS:
+        rem = int(STOCK_TRADE_COOLDOWN_SECONDS - (now - last_ts))
+        return False, f"⏳ Cooldown for **{stock}**: **{rem}s** remaining."
+
+    return True, ""
+
+def _commit_trade_meta(user: dict, stock: str):
+    _ensure_stock_fields(user)
+    _reset_daily_if_needed(user)
+    user["trade_meta"]["last_trade_ts"][stock] = _utc_now_ts()
+    user["trade_meta"]["daily"]["count"] = int(user["trade_meta"]["daily"].get("count", 0)) + 1
+
+def _calc_execution_price(mid: int, *, side: str, shares: int, stock: str) -> int:
+    """
+    side: "buy" or "sell"
+    Adds spread + slippage.
+    """
+    mid = max(1, int(mid))
+    shares = max(1, int(shares))
+
+    spread = STOCK_SPREAD_BPS / 10_000  # 200 bps -> 0.02
+    half = spread / 2
+
+    # Slippage: proportional to shares / liquidity, capped
+    liq = max(1, int(STOCK_LIQUIDITY.get(stock, 1500)))
+    impact = min(STOCK_MAX_IMPACT, (shares / liq) * 0.02)  # tune: 0.02 = 2% impact if shares==liq
+
+    if side == "buy":
+        px = mid * (1 + half + impact)
+    else:
+        px = mid * (1 - half - impact)
+
+    return max(1, int(px))
+
+def _calc_trade_fee(gross: int) -> int:
+    gross = max(0, int(gross))
+    pct = int(gross * STOCK_FEE_RATE)
+    return max(STOCK_FEE_FLAT, pct) if gross > 0 else 0
+
 def ensure_user_coins(user_id):
     user_id = str(user_id)
     coins = load_coins()
+
     if user_id not in coins:
         coins[user_id] = {
             "wallet": 100,
@@ -1079,18 +1236,277 @@ def ensure_user_coins(user_id):
             "last_daily": 0,
             "last_rob": 0,
             "last_bankrob": 0,
+
+            # SELLABLE settled shares
             "portfolio": {s: 0 for s in STOCKS},
+
+            # NEW: Pending shares (cannot sell yet)
+            "pending_portfolio": [],
+
+            # NEW: Trade tracking (cooldowns + limits)
+            "trade_meta": {
+                "last_trade_ts": {},   # per-stock cooldowns
+                "daily": {
+                    "day": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "count": 0
+                }
+            }
         }
         save_coins(coins)
+
     else:
         data = coins[user_id]
+
+        # Ensure legacy fields exist
         data.setdefault("last_rob", 0)
         data.setdefault("last_bankrob", 0)
+
+        # Ensure settled portfolio exists
         data.setdefault("portfolio", {})
         for s in STOCKS:
             data["portfolio"].setdefault(s, 0)
+
+        # NEW: ensure pending portfolio exists
+        if "pending_portfolio" not in data or not isinstance(data["pending_portfolio"], list):
+            data["pending_portfolio"] = []
+
+        # NEW: ensure trade meta exists
+        if "trade_meta" not in data:
+            data["trade_meta"] = {}
+
+        tm = data["trade_meta"]
+
+        # Per-stock cooldown timestamps
+        tm.setdefault("last_trade_ts", {})
+
+        # Daily trade counter
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if "daily" not in tm:
+            tm["daily"] = {"day": today, "count": 0}
+        else:
+            tm["daily"].setdefault("day", today)
+            tm["daily"].setdefault("count", 0)
+
         save_coins(coins)
+
     return coins
+
+# =========================
+# Stock Trade Confirm UI (BUY/SELL)
+# =========================
+
+class ConfirmTradeView(discord.ui.View):
+    """
+    Interactive confirm/cancel buttons for stock trades.
+    Works with prefix commands (ctx.send).
+    """
+
+    def __init__(self, *, author_id: int, payload: dict, timeout: float = 20.0):
+        super().__init__(timeout=timeout)
+        self.author_id = int(author_id)
+        self.payload = payload  # contains everything needed to execute
+        self.result = None      # "confirmed" | "cancelled" | "timeout"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # only the command author can click
+        if interaction.user.id != self.author_id:
+            try:
+                await interaction.response.send_message("❌ Only the person who ran the command can use these buttons.", ephemeral=True)
+            except Exception:
+                pass
+            return False
+        return True
+
+    async def _finalize(self, interaction: discord.Interaction, *, status_text: str):
+        # disable buttons
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+        try:
+            await interaction.response.edit_message(content=status_text, view=self)
+        except Exception:
+            # if already responded, try followup edit
+            try:
+                await interaction.edit_original_response(content=status_text, view=self)
+            except Exception:
+                pass
+
+        self.stop()
+
+        @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
+        async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            self.result = "confirmed"
+            await self._finalize(interaction, status_text="✅ Trade confirmed. Executing…")
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
+        async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            self.result = "cancelled"
+            await self._finalize(interaction, status_text="❌ Trade cancelled.")
+
+    async def on_timeout(self):
+        self.result = "timeout"
+        # disable buttons on timeout
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+
+
+def _build_trade_quote(*, side: str, stock: str, qty: int, mid: int) -> dict:
+    """
+    Returns a dict with quote numbers locked in at quote-time.
+    """
+    side = side.lower()
+    qty = max(1, int(qty))
+    mid = max(1, int(mid))
+
+    px = _calc_execution_price(mid, side=side, shares=qty, stock=stock)
+    gross = px * qty
+    fee = _calc_trade_fee(gross)
+
+    if side == "buy":
+        total = gross + fee
+        net = None
+    else:
+        total = None
+        net = max(0, gross - fee)
+
+    return {
+        "side": side,          # "buy" or "sell"
+        "stock": stock,        # canonical name
+        "qty": qty,
+        "mid": mid,
+        "px": px,
+        "gross": gross,
+        "fee": fee,
+        "total": total,        # only buy
+        "net": net,            # only sell
+        "settles_in": _human_delta(STOCK_SETTLEMENT_SECONDS),
+        "settles_at": _utc_now_ts() + STOCK_SETTLEMENT_SECONDS
+    }
+
+
+def _quote_embed(q: dict, *, user_name: str) -> discord.Embed:
+    side = q["side"].upper()
+    s = q["stock"]
+    qty = q["qty"]
+
+    embed = discord.Embed(title=f"🧾 {side} Quote — {user_name}", color=discord.Color.blurple())
+    embed.add_field(name="Stock", value=s, inline=True)
+    embed.add_field(name="Shares", value=str(qty), inline=True)
+    embed.add_field(name="Mid Price", value=str(q["mid"]), inline=True)
+    embed.add_field(name="Execution Price", value=str(q["px"]), inline=True)
+    embed.add_field(name="Gross", value=str(q["gross"]), inline=True)
+    embed.add_field(name="Fee", value=str(q["fee"]), inline=True)
+
+    if q["side"] == "buy":
+        embed.add_field(name="Total Cost", value=str(q["total"]), inline=True)
+        embed.add_field(name="Settlement", value=f"Clears in {q['settles_in']}", inline=True)
+        embed.set_footer(text="Confirm within 20s. Quote is locked for this confirm only.")
+    else:
+        embed.add_field(name="Net Proceeds", value=str(q["net"]), inline=True)
+        embed.set_footer(text="Confirm within 20s. Quote is locked for this confirm only.")
+
+    return embed
+
+
+async def _execute_trade_from_quote(*, ctx: commands.Context, quote: dict) -> tuple[bool, str]:
+    """
+    Executes a trade using the LOCKED quote numbers (px/fee/etc.).
+    Returns (ok, message).
+    """
+    uid = str(ctx.author.id)
+    side = quote["side"]
+    s = quote["stock"]
+    qty = int(quote["qty"])
+
+    # lock on user's money ops
+    async with MONEY_LOCKS[int(ctx.author.id)]:
+        coins = ensure_user_coins(uid)
+        user = coins[uid]
+
+        _ensure_stock_fields(user)
+        _settle_pending_for_user(user)
+
+        # re-check trade limits at execution time (cooldowns / daily count)
+        ok, msg = _check_trade_limits(user, s)
+        if not ok:
+            save_coins(coins)
+            return False, msg
+
+        if side == "buy":
+            total_cost = int(quote["total"])
+            if int(user.get("wallet", 0)) < total_cost:
+                save_coins(coins)
+                return False, f"💸 You no longer have enough coins. Need **{total_cost}**."
+
+            user["wallet"] -= total_cost
+
+            # add pending lot
+            user["pending_portfolio"].append({
+                "stock": s,
+                "shares": qty,
+                "buy_price": int(quote["px"]),
+                "settles_at": float(quote["settles_at"])
+            })
+
+            _commit_trade_meta(user, s)
+
+            # keep your pump counter behaviour
+            STOCK_PURCHASE_COUNT[s] = STOCK_PURCHASE_COUNT.get(s, 0) + qty
+
+            save_coins(coins)
+            return True, (
+                f"✅ Bought **{qty}** shares of **{s}** @ **{quote['px']}** (mid **{quote['mid']}**)\n"
+                f"Fee: **{quote['fee']}** • Total: **{quote['total']}** • Clears in **{quote['settles_in']}**."
+            )
+
+        else:  # sell
+            owned = int((user.get("portfolio") or {}).get(s, 0))
+            if owned < qty:
+                save_coins(coins)
+                return False, f"❌ You only have **{owned}** settled shares of **{s}**."
+
+            net = int(quote["net"])
+            user["portfolio"][s] = owned - qty
+            user["wallet"] += net
+
+            _commit_trade_meta(user, s)
+
+            save_coins(coins)
+            return True, (
+                f"🧾 Sold **{qty}** shares of **{s}** @ **{quote['px']}** (mid **{quote['mid']}**)\n"
+                f"Gross: **{quote['gross']}** • Fee: **{quote['fee']}** • Net: **{quote['net']}**"
+            )
+
+@bot.command(name="orders", help="View your pending stock settlements.")
+async def orders(ctx):
+    uid = str(ctx.author.id)
+    coins = ensure_user_coins(uid)
+    user = coins[uid]
+
+    _ensure_stock_fields(user)
+    _settle_pending_for_user(user)
+    save_coins(coins)
+
+    pending = user.get("pending_portfolio", [])
+    if not pending:
+        return await ctx.send("📭 You have no pending stock settlements.")
+
+    now = _utc_now_ts()
+    lines = []
+    for lot in pending[:25]:
+        stock = lot.get("stock", "?")
+        shares = int(lot.get("shares", 0))
+        settles_at = float(lot.get("settles_at", 0))
+        rem = int(max(0, settles_at - now))
+        lines.append(f"• **{stock}** x{shares} — settles in **{_human_delta(rem)}**")
+
+    embed = discord.Embed(
+        title=f"🧾 Pending Settlements — {ctx.author.display_name}",
+        description="\n".join(lines),
+        color=discord.Color.blurple()
+    )
+    await ctx.send(embed=embed)
 
 # =========================
 # XP helpers
@@ -1728,11 +2144,8 @@ async def bankrob(ctx, member: discord.Member = None):
                 color=discord.Color.purple()
             ))
 
-        # Success rule: special ID always succeeds; others 20% success
-        if ctx.author.id == ALWAYS_BANKROB_USER_ID:
-            success = True
-        else:
-            success = random.choices([True, False], weights=[20, 80])[0]
+        # Everyone has equal chance (20%)
+        success = random.choices([True, False], weights=[20, 80])[0]
 
         if success:
             # --- Proportionate steal amount ---
@@ -1970,55 +2383,153 @@ async def solo_stand(ctx: commands.Context):
 
 @bot.command(name="gamble", help="Gamble coins on red or black 🎰 (use `!gamble <amount>` or `!gamble all`)")
 async def gamble(ctx, amount: str):
-    coins = ensure_user_coins(ctx.author.id)
-    user = coins[str(ctx.author.id)]
+    uid = str(ctx.author.id)
+    coins = ensure_user_coins(uid)
+    user = coins[uid]
 
-    # ----- Parse amount -----
+    def calc_gamble_fee(bet_amount: int) -> int:
+        bet_amount = max(0, int(bet_amount))
+        pct = int(bet_amount * GAMBLE_FEE_RATE)
+        return max(0, int(GAMBLE_FEE_FLAT) + pct)
+
+    # ----- Parse amount (and include fee rules) -----
     if amount.lower() == "all":
-        bet = user["wallet"]
-        if bet <= 0:
+        # For "all", we want: fee + bet <= wallet
+        # So bet becomes "wallet minus fee" (fee depends on bet; but if rate is 0, it's simple).
+        # We'll handle rate safely by iterating once.
+        wallet = int(user.get("wallet", 0))
+        if wallet <= 0:
             return await ctx.send("💸 You don’t have any coins to gamble.")
+
+        # Start with best guess
+        bet = wallet
+        for _ in range(5):
+            fee = calc_gamble_fee(bet)
+            bet = max(0, wallet - fee)
+
+        fee = calc_gamble_fee(bet)
+        if bet <= 0:
+            return await ctx.send("💸 You don’t have enough coins to cover the gambling fee.")
+
     else:
         if not amount.isdigit():
             return await ctx.send("❌ Invalid amount. Use a number or `all`.")
         bet = int(amount)
         if bet <= 0:
             return await ctx.send("❌ Invalid amount to gamble.")
-        if user["wallet"] < bet:
-            return await ctx.send("💸 You don’t have enough coins in your wallet to gamble that much.")
 
-    # ----- Spin -----
+        fee = calc_gamble_fee(bet)
+        total_needed = bet + fee
+        if int(user.get("wallet", 0)) < total_needed:
+            return await ctx.send(f"💸 You need **{total_needed}** coins (bet **{bet}** + fee **{fee}**).")
+
+    # ----- Charge fee immediately (always) -----
+    user["wallet"] -= fee
+    save_coins(coins)
+
+    # Decide outcome now, reveal later
     result = random.choice(["red", "black"])
+
+    # ----- Countdown bar (removes 1 square per second) -----
+    TOTAL_SECONDS = 5
+    BAR_LEN = TOTAL_SECONDS
+    GREEN = "🟩"
+    GREY = "⬜"
+    RED = "🟥"
+
+    def bar_running(remaining: int) -> str:
+        remaining = max(0, min(TOTAL_SECONDS, int(remaining)))
+        return (GREEN * remaining) + (GREY * (BAR_LEN - remaining))
+
+    def bar_closed() -> str:
+        return RED * BAR_LEN
+
+    timeout_rake = max(1, int(bet * GAMBLE_TIMEOUT_RAKE_RATE)) if bet > 0 else 0
 
     embed = discord.Embed(
         title="🎰 Place Your Bet!",
         description=(
-            f"Bet: **{bet}** coins\n\n"
-            "React with 🟥 for **Red** or ⬛ for **Black**.\n"
-            "You have **5 seconds**..."
+            f"Bet: **{bet}** coins\n"
+            f"Fee paid: **{fee}** coins\n"
+            f"React: 🟥 = **Red** | ⬛ = **Black**\n\n"
+            f"Closes in **{TOTAL_SECONDS}s**  {bar_running(TOTAL_SECONDS)}\n"
+            f"⏳ If you don’t react in time: lose **{timeout_rake}** coins (10%)."
         ),
         color=discord.Color.gold()
     )
+
     message = await ctx.send(embed=embed)
     await message.add_reaction("🟥")
     await message.add_reaction("⬛")
 
     def check(reaction, u):
         return (
-            u == ctx.author and
-            str(reaction.emoji) in ["🟥", "⬛"] and
-            reaction.message.id == message.id
+            u.id == ctx.author.id and
+            reaction.message.id == message.id and
+            str(reaction.emoji) in ("🟥", "⬛")
         )
 
+    reaction_task = asyncio.create_task(
+        bot.wait_for("reaction_add", timeout=TOTAL_SECONDS, check=check)
+    )
+
+    # Animate: 5 -> 4 -> 3 -> 2 -> 1 -> CLOSED
+    for remaining in range(TOTAL_SECONDS - 1, -1, -1):
+        if reaction_task.done():
+            break
+
+        if remaining > 0:
+            embed.description = (
+                f"Bet: **{bet}** coins\n"
+                f"Fee paid: **{fee}** coins\n"
+                f"React: 🟥 = **Red** | ⬛ = **Black**\n\n"
+                f"Closes in **{remaining}s**  {bar_running(remaining)}\n"
+                f"⏳ If you don’t react in time: lose **{timeout_rake}** coins (10%)."
+            )
+        else:
+            embed.description = (
+                f"Bet: **{bet}** coins\n"
+                f"Fee paid: **{fee}** coins\n"
+                f"React: 🟥 = **Red** | ⬛ = **Black**\n\n"
+                f"**CLOSED**  {bar_closed()}"
+            )
+
+        try:
+            await message.edit(embed=embed)
+        except discord.HTTPException:
+            pass
+
+        if remaining > 0:
+            await asyncio.sleep(1)
+
+    # ----- Resolve -----
     try:
-        reaction, _ = await bot.wait_for("reaction_add", timeout=5.0, check=check)
+        reaction, _ = await reaction_task
     except asyncio.TimeoutError:
-        return await ctx.send("⏰ You didn’t react in time. Bet cancelled.")
+        # No-show penalty: take 10% of bet
+        coins = ensure_user_coins(uid)
+        user = coins[uid]
+        wallet = int(user.get("wallet", 0))
+        taken = min(wallet, timeout_rake)
+        user["wallet"] = wallet - taken
+        save_coins(coins)
+
+        return await ctx.send(
+            f"⏰ You didn’t react in time.\n"
+            f"💸 No-show rake: **-{taken}** coins (10% of bet)."
+        )
 
     choice = "red" if str(reaction.emoji) == "🟥" else "black"
-    win = choice == result
+    win = (choice == result)
 
-    # ----- Resolve bet -----
+    # Deduct the bet only if they actually participated (reacted in time)
+    coins = ensure_user_coins(uid)
+    user = coins[uid]
+
+    if int(user.get("wallet", 0)) < bet:
+        # extremely rare edge case (other commands spent their wallet during the 5s)
+        return await ctx.send("⚠️ You no longer have enough coins to cover the bet.")
+
     user["wallet"] -= bet
 
     if win:
@@ -2028,7 +2539,8 @@ async def gamble(ctx, amount: str):
             title="🎉 You Win!",
             description=(
                 f"The wheel landed on **{result.upper()}**!\n"
-                f"You won **{winnings}** coins 🎉"
+                f"You won **{winnings}** coins 🎉\n"
+                f"(Fee was **{fee}**.)"
             ),
             color=discord.Color.green()
         )
@@ -2037,7 +2549,8 @@ async def gamble(ctx, amount: str):
             title="😢 You Lose!",
             description=(
                 f"The wheel landed on **{result.upper()}**.\n"
-                f"You lost **{bet}** coins 💀"
+                f"You lost **{bet}** coins 💀\n"
+                f"(Fee was **{fee}**.)"
             ),
             color=discord.Color.red()
         )
@@ -2071,10 +2584,56 @@ async def inventory(ctx, member: discord.Member = None):
         embed.add_field(name=item, value=f"🧮 Quantity: {qty}", inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name="buy", help="Buy a stock or shop item. Stocks: !buy <stock> <amount>|all; Items: !buy <item> [all].")
+# =========================
+# Emoji confirm helper (needed by !buy / !sell)
+# =========================
+async def wait_for_confirm(ctx, message: discord.Message, timeout: int = 15):
+    """
+    Returns:
+      True  -> ✅ confirmed
+      False -> ❌ cancelled
+      None  -> timed out
+    """
+    try:
+        await message.add_reaction("✅")
+        await message.add_reaction("❌")
+    except discord.HTTPException:
+        pass
+
+    def check(reaction: discord.Reaction, user: discord.User):
+        return (
+            user.id == ctx.author.id
+            and reaction.message.id == message.id
+            and str(reaction.emoji) in ("✅", "❌")
+        )
+
+    try:
+        reaction, _ = await bot.wait_for("reaction_add", timeout=timeout, check=check)
+        return str(reaction.emoji) == "✅"
+    except asyncio.TimeoutError:
+        return None
+
+
+# =========================
+# SHOP SELL SETTINGS
+# =========================
+SHOP_SELLBACK_RATE = 0.50  # 50% of buy price back when selling items (change as you like)
+
+
+# =========================
+# FULL !buy COMMAND (stocks + shop items)
+# =========================
+@bot.command(name="buy", help="Buy a stock or shop item. Stocks: !buy <stock> <amount|all>; Items: !buy <item> [all].")
 async def buy(ctx, *, raw: str):
     uid = str(ctx.author.id)
-    raw = " ".join(raw.strip().split())  # normalize spaces
+    raw = " ".join((raw or "").strip().split())  # normalize spaces
+
+    if not raw:
+        return await ctx.send(
+            "❌ Usage:\n"
+            "• Stocks: `!buy <stock> <amount|all>`\n"
+            "• Items:  `!buy <item>` or `!buy <item> all`"
+        )
 
     # Case-insensitive lookup maps
     stock_names = {s.lower(): s for s in STOCKS}
@@ -2082,143 +2641,424 @@ async def buy(ctx, *, raw: str):
 
     parts = raw.split()
 
-    # ---------- STOCKS ----------
-    # Accept: "!buy qmkoin 3" OR "!buy qmkoin all" OR "!buy all qmkoin"
-    if len(parts) >= 2:
-        last = parts[-1].lower()
-        first = parts[0].lower()
+    # =========================================================
+    # STOCKS: support:
+    #   !buy qmkoin 5
+    #   !buy qmkoin all
+    #   !buy all qmkoin
+    # =========================================================
+    stock_symbol = None
+    amount_spec = None
 
-        # Case A: amount is a number at the end
-        if last.isdigit():
-            amount = int(last)
-            symbol = " ".join(parts[:-1]).lower()
-            if symbol in stock_names:
-                if amount <= 0:
+    if len(parts) >= 2 and parts[-1].isdigit():
+        amount_spec = int(parts[-1])
+        stock_symbol = " ".join(parts[:-1]).lower()
+    elif len(parts) >= 2 and parts[-1].lower() == "all":
+        amount_spec = "all"
+        stock_symbol = " ".join(parts[:-1]).lower()
+    elif parts[0].lower() == "all" and len(parts) >= 2:
+        amount_spec = "all"
+        stock_symbol = " ".join(parts[1:]).lower()
+
+    if stock_symbol and stock_symbol in stock_names:
+        s = stock_names[stock_symbol]
+
+        async with MONEY_LOCKS[int(uid)]:
+            coins = ensure_user_coins(uid)
+            user  = coins[uid]
+
+            _ensure_stock_fields(user)
+            _settle_pending_for_user(user)
+
+            stocks = load_stocks()
+            try:
+                mid = int(stocks[s]["price"])
+            except Exception:
+                return await ctx.send("⚠️ Couldn't get stock price. Try again later.")
+
+            ok, msg = _check_trade_limits(user, s)
+            if not ok:
+                return await ctx.send(msg)
+
+            # ----- Determine qty -----
+            if amount_spec == "all":
+                guess = max(0, int(user["wallet"] // max(1, mid)))
+                if guess <= 0:
+                    return await ctx.send("💸 You can't afford any shares right now.")
+
+                qty = guess
+                while qty > 0:
+                    px = _calc_execution_price(mid, side="buy", shares=qty, stock=s)
+                    gross = px * qty
+                    fee = _calc_trade_fee(gross)
+                    if gross + fee <= user["wallet"]:
+                        break
+                    qty -= 1
+
+                if qty <= 0:
+                    return await ctx.send("💸 You can't afford any shares right now (after fees/spread).")
+            else:
+                qty = int(amount_spec)
+                if qty <= 0:
                     return await ctx.send("❌ Amount must be a positive integer.")
-                stocks = load_stocks()
-                coins  = ensure_user_coins(uid)
-                user   = coins[uid]
-                s = stock_names[symbol]
-                try:
-                    price = int(stocks[s]["price"])
-                except Exception:
-                    return await ctx.send("⚠️ Couldn't get stock price. Try again later.")
-                cost = price * amount
-                if user["wallet"] < cost:
-                    return await ctx.send(f"💸 You need {cost} coins to buy {amount} shares of {s}.")
-                user["wallet"] -= cost
-                user["portfolio"][s] = user["portfolio"].get(s, 0) + amount
-                STOCK_PURCHASE_COUNT[s] = STOCK_PURCHASE_COUNT.get(s, 0) + amount
-                save_coins(coins)
-                return await ctx.send(f"✅ You bought {amount} shares of **{s}** at {price} coins each!")
 
-        # Case B: "all" at the end -> buy max shares
-        if last == "all":
-            symbol = " ".join(parts[:-1]).lower()
-            if symbol in stock_names:
-                stocks = load_stocks()
-                coins  = ensure_user_coins(uid)
-                user   = coins[uid]
-                s = stock_names[symbol]
-                try:
-                    price = int(stocks[s]["price"])
-                except Exception:
-                    return await ctx.send("⚠️ Couldn't get stock price. Try again later.")
-                if price <= 0:
-                    return await ctx.send("⚠️ Invalid price.")
-                amount = user["wallet"] // price
-                if amount <= 0:
-                    return await ctx.send("💸 You can't afford any shares right now.")
-                cost = price * amount
-                user["wallet"] -= cost
-                user["portfolio"][s] = user["portfolio"].get(s, 0) + amount
-                STOCK_PURCHASE_COUNT[s] = STOCK_PURCHASE_COUNT.get(s, 0) + amount
-                save_coins(coins)
-                return await ctx.send(f"✅ Bought **{amount}** shares of **{s}** (spent {cost} coins).")
+                px = _calc_execution_price(mid, side="buy", shares=qty, stock=s)
+                gross = px * qty
+                fee = _calc_trade_fee(gross)
+                if gross + fee > user["wallet"]:
+                    return await ctx.send(
+                        f"💸 Need **{gross + fee}** coins (incl fee **{fee}**) to buy **{qty}** shares of **{s}**."
+                    )
 
-        # Case C: "all" first -> "!buy all qmkoin"
-        if first == "all":
-            symbol = " ".join(parts[1:]).lower()
-            if symbol in stock_names:
-                stocks = load_stocks()
-                coins  = ensure_user_coins(uid)
-                user   = coins[uid]
-                s = stock_names[symbol]
-                try:
-                    price = int(stocks[s]["price"])
-                except Exception:
-                    return await ctx.send("⚠️ Couldn't get stock price. Try again later.")
-                if price <= 0:
-                    return await ctx.send("⚠️ Invalid price.")
-                amount = user["wallet"] // price
-                if amount <= 0:
-                    return await ctx.send("💸 You can't afford any shares right now.")
-                cost = price * amount
-                user["wallet"] -= cost
-                user["portfolio"][s] = user["portfolio"].get(s, 0) + amount
-                STOCK_PURCHASE_COUNT[s] = STOCK_PURCHASE_COUNT.get(s, 0) + amount
-                save_coins(coins)
-                return await ctx.send(f"✅ Bought **{amount}** shares of **{s}** (spent {cost} coins).")
+            # ----- Final quote -----
+            px = _calc_execution_price(mid, side="buy", shares=qty, stock=s)
+            gross = px * qty
+            fee = _calc_trade_fee(gross)
+            total = gross + fee
+            settles_in = _human_delta(STOCK_SETTLEMENT_SECONDS)
 
-    # ---------- SHOP ITEMS ----------
-    # Accept exact item name (case-insensitive), optionally with "all" at start/end
-    # e.g. "!buy anime body pillow", "!buy anime body pillow all", "!buy all anime body pillow"
+            confirm_msg = await ctx.send(
+                f"🧾 **Trade Confirm (BUY STOCK)**\n"
+                f"Stock: **{s}**\n"
+                f"Shares: **{qty}**\n"
+                f"Mid: **{mid}**\n"
+                f"Execution: **{px}**\n"
+                f"Fee: **{fee}**\n"
+                f"Total: **{total}**\n"
+                f"Settlement: **{settles_in}**\n\n"
+                f"React ✅ to confirm or ❌ to cancel."
+            )
+
+            result = await wait_for_confirm(ctx, confirm_msg, timeout=15)
+            if result is None:
+                return await ctx.send("⏰ Trade timed out.")
+            if result is False:
+                return await ctx.send("❌ Trade cancelled.")
+
+            # ----- Execute -----
+            if int(user.get("wallet", 0)) < total:
+                save_coins(coins)
+                return await ctx.send("⚠️ You no longer have enough coins to complete that trade.")
+
+            user["wallet"] -= total
+
+            settles_at = _utc_now_ts() + STOCK_SETTLEMENT_SECONDS
+            user["pending_portfolio"].append({
+                "stock": s,
+                "shares": qty,
+                "buy_price": px,
+                "settles_at": settles_at
+            })
+
+            _commit_trade_meta(user, s)
+            STOCK_PURCHASE_COUNT[s] = STOCK_PURCHASE_COUNT.get(s, 0) + qty
+
+            save_coins(coins)
+
+            return await ctx.send(
+                f"✅ Bought **{qty}** shares of **{s}** @ **{px}** (mid **{mid}**)\n"
+                f"Fee: **{fee}** • Total: **{total}** • Settles in **{settles_in}**.\n"
+                f"Check pending with `!orders`."
+            )
+
+    # =========================================================
+    # SHOP ITEMS (fallback)
+    # Accept:
+    #   !buy anime body pillow
+    #   !buy anime body pillow all
+    #   !buy all anime body pillow
+    # =========================================================
     key = raw.lower()
 
-    # Handle "<item> all"
+    buy_all_items = False
     if key.endswith(" all"):
         key = key[:-4].strip()
         buy_all_items = True
-    # Handle "all <item>"
     elif key.startswith("all "):
         key = key[4:].strip()
         buy_all_items = True
-    else:
-        buy_all_items = False
 
-    # Flexible whitespace match
     key_compact = " ".join(key.split())
     match = next((k for k in shop_names if " ".join(k.split()) == key_compact), None)
     if match is None:
-        return await ctx.send("❌ Invalid item or stock format.\nUse `!buy <stock> <amount|all>` or `!buy <shop item> [all]`.")
+        return await ctx.send(
+            "❌ Invalid item or stock format.\n"
+            "Use:\n"
+            "• Stocks: `!buy <stock> <amount|all>`\n"
+            "• Items:  `!buy <item>` or `!buy <item> all`"
+        )
 
     item_name = shop_names[match]
-    stock = load_shop_stock()
-    coins = ensure_user_coins(uid)
-    user  = coins[uid]
 
-    price = ITEM_PRICES[item_name]
-    available = int(stock.get(item_name, 0))
-    if available <= 0:
-        return await ctx.send(f"❌ {item_name} is out of stock.")
+    async with MONEY_LOCKS[int(uid)]:
+        stock = load_shop_stock()
+        coins = ensure_user_coins(uid)
+        user  = coins[uid]
 
-    if buy_all_items:
-        affordable = user["wallet"] // price
-        qty = min(available, affordable)
-        if qty <= 0:
-            return await ctx.send("💸 You can’t afford any right now.")
+        price = int(ITEM_PRICES[item_name])
+        available = int(stock.get(item_name, 0))
+        if available <= 0:
+            return await ctx.send(f"❌ **{item_name}** is out of stock.")
+
+        if buy_all_items:
+            affordable = int(user["wallet"] // max(1, price))
+            qty = min(available, affordable)
+            if qty <= 0:
+                return await ctx.send("💸 You can’t afford any right now.")
+        else:
+            qty = 1
+            if int(user["wallet"]) < price:
+                return await ctx.send("💸 You don’t have enough coins to buy this item.")
+
+        cost = price * qty
+
+        confirm_msg = await ctx.send(
+            f"🛒 **Confirm Purchase (ITEM)**\n"
+            f"Item: **{item_name}**\n"
+            f"Qty: **{qty}**\n"
+            f"Each: **{price}**\n"
+            f"Total: **{cost}**\n\n"
+            f"React ✅ to confirm or ❌ to cancel."
+        )
+        result = await wait_for_confirm(ctx, confirm_msg, timeout=15)
+        if result is None:
+            return await ctx.send("⏰ Purchase timed out.")
+        if result is False:
+            return await ctx.send("❌ Purchase cancelled.")
+
+        if int(user["wallet"]) < cost:
+            save_coins(coins)
+            return await ctx.send("⚠️ You no longer have enough coins for that purchase.")
+
+        user["wallet"] -= cost
+        stock[item_name] = available - qty
+        save_shop_stock(stock)
+        save_coins(coins)
+
+        inv = load_inventory()
+        inv.setdefault(uid, {})
+        inv[uid][item_name] = int(inv[uid].get(item_name, 0)) + qty
+        save_inventory(inv)
+
+        if qty == 1:
+            return await ctx.send(f"✅ You bought **{item_name}** for **{price}** coins!")
+        return await ctx.send(f"✅ You bought **{qty}× {item_name}** for **{cost}** coins (each {price}).")
+
+
+# =========================
+# FULL !sell COMMAND (stocks + shop items)
+# =========================
+@bot.command(name="sell", help="Sell a stock or shop item. Stocks: !sell <stock> <amount|all>; Items: !sell <item> [amount|all].")
+async def sell(ctx, *, raw: str):
+    uid = str(ctx.author.id)
+    raw = " ".join((raw or "").strip().split())
+    if not raw:
+        return await ctx.send(
+            "❌ Usage:\n"
+            "• Stocks: `!sell <stock> <amount|all>`\n"
+            "• Items:  `!sell <item> [amount|all]`"
+        )
+
+    stock_names = {s.lower(): s for s in STOCKS}
+    shop_names  = {i.lower(): i for i in SHOP_ITEMS}
+
+    parts = raw.split()
+
+    # We support:
+    #  STOCKS:
+    #    !sell qmkoin 3
+    #    !sell qmkoin all
+    #    !sell all qmkoin
+    #  ITEMS:
+    #    !sell oreo plush
+    #    !sell oreo plush 2
+    #    !sell oreo plush all
+    #    !sell all oreo plush
+    #
+    # Parsing plan:
+    # - detect "all <thing>" form
+    # - detect "<thing> all" form
+    # - detect "<thing> <number>" form
+    # - otherwise: "<thing>" (items default to 1, stocks require amount)
+
+    amount_spec = None
+    thing = None
+
+    # all <thing>
+    if parts[0].lower() == "all" and len(parts) >= 2:
+        amount_spec = "all"
+        thing = " ".join(parts[1:]).lower()
+    # <thing> all
+    elif len(parts) >= 2 and parts[-1].lower() == "all":
+        amount_spec = "all"
+        thing = " ".join(parts[:-1]).lower()
+    # <thing> <number>
+    elif len(parts) >= 2 and parts[-1].isdigit():
+        amount_spec = int(parts[-1])
+        thing = " ".join(parts[:-1]).lower()
     else:
-        # default single item buy
-        qty = 1
-        if user["wallet"] < price:
-            return await ctx.send("💸 You don’t have enough coins to buy this item.")
+        thing = " ".join(parts).lower()
+        amount_spec = None
 
-    # Apply purchase
-    cost = price * qty
-    user["wallet"] -= cost
-    stock[item_name] = available - qty
-    save_shop_stock(stock)
-    save_coins(coins)
+    # Decide if it is a STOCK (exact match) first
+    if thing in stock_names:
+        if amount_spec is None:
+            return await ctx.send("❌ Missing amount.\nUsage: `!sell <stock> <amount|all>`")
 
-    inv = load_inventory()
-    inv.setdefault(uid, {})
-    inv[uid][item_name] = inv[uid].get(item_name, 0) + qty
-    save_inventory(inv)
+        s = stock_names[thing]
 
-    if qty == 1:
-        await ctx.send(f"✅ You bought **{item_name}** for **{price}** coins!")
-    else:
-        await ctx.send(f"✅ You bought **{qty}× {item_name}** for **{cost}** coins (each {price}).")
+        async with MONEY_LOCKS[int(uid)]:
+            coins = ensure_user_coins(uid)
+            user  = coins[uid]
+
+            _ensure_stock_fields(user)
+            _settle_pending_for_user(user)
+
+            owned = int((user.get("portfolio") or {}).get(s, 0))
+            if owned <= 0:
+                return await ctx.send(f"❌ You don't own any **{s}** shares (settled). Check `!orders` for pending.")
+
+            if amount_spec == "all":
+                sell_qty = owned
+            else:
+                sell_qty = int(amount_spec)
+                if sell_qty <= 0:
+                    return await ctx.send("❌ Amount must be a positive integer.")
+                if sell_qty > owned:
+                    return await ctx.send(f"❌ You only own **{owned}** settled shares of **{s}**.")
+
+            stocks = load_stocks()
+            try:
+                mid = int(stocks[s]["price"])
+            except Exception:
+                return await ctx.send("⚠️ Couldn't get stock price. Try again later.")
+
+            ok, msg = _check_trade_limits(user, s)
+            if not ok:
+                return await ctx.send(msg)
+
+            px = _calc_execution_price(mid, side="sell", shares=sell_qty, stock=s)
+            gross = px * sell_qty
+            fee = _calc_trade_fee(gross)
+            net = max(0, gross - fee)
+
+            confirm_msg = await ctx.send(
+                f"🧾 **Trade Confirm (SELL STOCK)**\n"
+                f"Stock: **{s}**\n"
+                f"Shares: **{sell_qty}**\n"
+                f"Mid: **{mid}**\n"
+                f"Execution: **{px}**\n"
+                f"Gross: **{gross}**\n"
+                f"Fee: **{fee}**\n"
+                f"Net: **{net}**\n\n"
+                f"React ✅ to confirm or ❌ to cancel."
+            )
+
+            result = await wait_for_confirm(ctx, confirm_msg, timeout=15)
+            if result is None:
+                return await ctx.send("⏰ Trade timed out.")
+            if result is False:
+                return await ctx.send("❌ Trade cancelled.")
+
+            owned_now = int((user.get("portfolio") or {}).get(s, 0))
+            if owned_now < sell_qty:
+                save_coins(coins)
+                return await ctx.send("⚠️ You no longer have enough settled shares to sell that amount.")
+
+            user["wallet"] += net
+            user["portfolio"][s] = owned_now - sell_qty
+
+            _commit_trade_meta(user, s)
+            save_coins(coins)
+
+            return await ctx.send(
+                f"🧾 Sold **{sell_qty}** shares of **{s}** @ **{px}** (mid **{mid}**)\n"
+                f"Gross: **{gross}** • Fee: **{fee}** • Net: **{net}**"
+            )
+
+    # Otherwise treat as SHOP ITEM (fuzzy match on compact spacing)
+    # (This lets "anime   body   pillow" work.)
+    thing_compact = " ".join(thing.split())
+    item_key = next((k for k in shop_names if " ".join(k.split()) == thing_compact), None)
+    if item_key is None:
+        return await ctx.send(
+            "❌ Unknown stock/item.\n"
+            "Examples:\n"
+            "• `!sell QMkoin 5`\n"
+            "• `!sell Oreo plush 2`\n"
+            "• `!sell all Anime body pillow`"
+        )
+
+    item_name = shop_names[item_key]
+
+    # default item amount if not provided
+    if amount_spec is None:
+        amount_spec = 1
+
+    async with MONEY_LOCKS[int(uid)]:
+        inv = load_inventory()
+        user_inv = inv.get(uid, {}) or {}
+        owned_items = int(user_inv.get(item_name, 0))
+
+        if owned_items <= 0:
+            return await ctx.send(f"❌ You don’t have any **{item_name}** to sell.")
+
+        if amount_spec == "all":
+            sell_qty = owned_items
+        else:
+            sell_qty = int(amount_spec)
+            if sell_qty <= 0:
+                return await ctx.send("❌ Amount must be a positive integer.")
+            if sell_qty > owned_items:
+                return await ctx.send(f"❌ You only have **{owned_items}**× **{item_name}**.")
+
+        buy_price = int(ITEM_PRICES[item_name])
+        sell_each = max(1, int(buy_price * SHOP_SELLBACK_RATE))
+        payout = sell_each * sell_qty
+
+        confirm_msg = await ctx.send(
+            f"🧾 **Confirm Sell (ITEM)**\n"
+            f"Item: **{item_name}**\n"
+            f"Qty: **{sell_qty}**\n"
+            f"Sell each: **{sell_each}** (rate {int(SHOP_SELLBACK_RATE*100)}%)\n"
+            f"Total payout: **{payout}**\n\n"
+            f"React ✅ to confirm or ❌ to cancel."
+        )
+
+        result = await wait_for_confirm(ctx, confirm_msg, timeout=15)
+        if result is None:
+            return await ctx.send("⏰ Sell timed out.")
+        if result is False:
+            return await ctx.send("❌ Sell cancelled.")
+
+        # Re-check inventory in case it changed
+        inv = load_inventory()
+        user_inv = inv.get(uid, {}) or {}
+        owned_now = int(user_inv.get(item_name, 0))
+        if owned_now < sell_qty:
+            return await ctx.send("⚠️ You no longer have enough of that item to sell.")
+
+        # Pay coins
+        coins = ensure_user_coins(uid)
+        coins[uid]["wallet"] = int(coins[uid].get("wallet", 0)) + payout
+        save_coins(coins)
+
+        # Remove from inventory
+        user_inv[item_name] = owned_now - sell_qty
+        if user_inv[item_name] <= 0:
+            user_inv.pop(item_name, None)
+        inv[uid] = user_inv
+        save_inventory(inv)
+
+        # Return to shop stock
+        shop_stock = load_shop_stock()
+        shop_stock[item_name] = int(shop_stock.get(item_name, 0)) + sell_qty
+        save_shop_stock(shop_stock)
+
+        return await ctx.send(
+            f"✅ Sold **{sell_qty}× {item_name}** for **{payout}** coins "
+            f"(**{sell_each}** each)."
+        )
 
 @bot.command(name="claim", help="Use a Crash token to halve the value of a stock. Usage: !claim <stock>")
 async def claim(ctx, stock_name: str):
@@ -2249,83 +3089,6 @@ async def claim(ctx, stock_name: str):
         description=f"{ctx.author.mention} halved **{s}** from **{old}** → **{new}** coins!",
         color=discord.Color.orange()
     ))
-
-@bot.command(name="sell", help="Sell shares of a stock. Usage: !sell <stock> <amount|all> (also: !sell all <stock>)")
-async def sell(ctx, *, raw: str):
-    uid = str(ctx.author.id)
-    raw = " ".join(raw.strip().split())  # normalize spaces
-
-    stock_names = {s.lower(): s for s in STOCKS}
-    parts = raw.split()
-
-    if not parts:
-        return await ctx.send("❌ Usage: `!sell <stock> <amount|all>`")
-
-    # Accept:
-    # - "!sell qmkoin 3"
-    # - "!sell qmkoin all"
-    # - "!sell all qmkoin"
-    amount = None
-    symbol = None
-
-    # Case A: ends with number
-    if len(parts) >= 2 and parts[-1].isdigit():
-        amount = int(parts[-1])
-        symbol = " ".join(parts[:-1]).lower()
-
-    # Case B: ends with "all"
-    elif len(parts) >= 2 and parts[-1].lower() == "all":
-        amount = "all"
-        symbol = " ".join(parts[:-1]).lower()
-
-    # Case C: starts with "all"
-    elif parts[0].lower() == "all" and len(parts) >= 2:
-        amount = "all"
-        symbol = " ".join(parts[1:]).lower()
-
-    # Otherwise treat whole string as symbol and assume 1 (for back-compat error message)
-    else:
-        symbol = " ".join(parts).lower()
-
-    if symbol not in stock_names:
-        return await ctx.send("❌ Invalid stock.\nUsage: `!sell <stock> <amount|all>`")
-
-    s = stock_names[symbol]
-
-    coins = ensure_user_coins(uid)
-    user  = coins[uid]
-    portfolio = user.get("portfolio", {})
-    owned = int(portfolio.get(s, 0))
-
-    if owned <= 0:
-        return await ctx.send(f"❌ You don't own any **{s}** shares.")
-
-    stocks = load_stocks()
-    try:
-        price = int(stocks[s]["price"])
-    except Exception:
-        return await ctx.send("⚠️ Couldn't get stock price. Try again later.")
-
-    if amount == "all":
-        sell_qty = owned
-    else:
-        # amount could be None or invalid -> show usage
-        if not isinstance(amount, int) or amount <= 0:
-            return await ctx.send("❌ Invalid amount.\nUsage: `!sell <stock> <amount|all>`")
-        if amount > owned:
-            return await ctx.send(f"❌ You only own {owned} shares of **{s}**.")
-        sell_qty = amount
-
-    total = price * sell_qty
-    user["wallet"] += total
-    user["portfolio"][s] = owned - sell_qty
-    save_coins(coins)
-
-    if sell_qty == owned:
-        msg = f"🧾 Sold **ALL {sell_qty}** shares of **{s}** for **{total}** coins ({price} each)."
-    else:
-        msg = f"🧾 Sold **{sell_qty}** shares of **{s}** for **{total}** coins ({price} each)."
-    await ctx.send(msg)
 
 @bot.command(name="stocks", help="View current stock prices.")
 async def stocks_cmd(ctx):
@@ -3052,6 +3815,8 @@ async def pay_dividends():
     stocks = load_stocks()
     any_payout = False
     for user_id, data in coins.items():
+        _ensure_stock_fields(data)
+        _settle_pending_for_user(data)
         pf = data.get("portfolio", {})
         total_value = sum(pf.get(s, 0) * int(stocks[s]["price"]) for s in STOCKS)
         payout = int(total_value * DIVIDEND_RATE)
@@ -3063,6 +3828,21 @@ async def pay_dividends():
         channel = bot.get_channel(MARKET_ANNOUNCE_CHANNEL_ID)
         if channel:
             await channel.send("💸 Dividends have been paid out to all shareholders!")
+
+@tasks.loop(minutes=2)
+async def settle_all_pending():
+    await bot.wait_until_ready()
+    coins = load_coins()
+    changed = False
+    for uid, user in coins.items():
+        try:
+            _ensure_stock_fields(user)
+            if _settle_pending_for_user(user) > 0:
+                changed = True
+        except Exception:
+            pass
+    if changed:
+        save_coins(coins)
 
 # =========================
 # Scheduled task (every 5 hours)
@@ -3076,8 +3856,7 @@ async def send_backup_zip_every_5h():
 @send_backup_zip_every_5h.before_loop
 async def _before_send_backup_zip_every_5h():
     await bot.wait_until_ready()
-    # send once on boot (comment out if you don't want that)
-    await dm_package_to_user(PACKAGE_USER_ID, reason="Bot started")
+    # DON'T send here; this function is only to wait until the bot is ready.
 
 # =========================
 # Ready
