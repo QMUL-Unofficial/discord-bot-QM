@@ -15,6 +15,7 @@ import aiohttp
 from zoneinfo import ZoneInfo
 import zipfile
 import re  # add near the top with imports
+import traceback
 
 # =========================
 # Boot / Config
@@ -3624,6 +3625,23 @@ async def baltop(ctx, count: int = 10):
 # =========================
 # Message events (AFK + XP)
 # =========================
+@bot.event
+async def on_command_error(ctx, error):
+    # Don't double-handle if command has its own error handler
+    if hasattr(ctx.command, "on_error"):
+        return
+
+    # Common user mistakes (optional)
+    if isinstance(error, commands.MissingRequiredArgument):
+        return await ctx.send(f"❌ Missing argument: `{error.param.name}`")
+
+    # Print full traceback to Railway logs
+    print("==== COMMAND ERROR ====")
+    traceback.print_exception(type(error), error, error.__traceback__)
+
+    # Send a short message to Discord
+    await ctx.send(f"⚠️ Command failed: `{type(error).__name__}` (check Railway logs).")
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
