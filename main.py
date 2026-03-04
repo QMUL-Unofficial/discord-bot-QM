@@ -114,13 +114,42 @@ blackjack_lobbies = defaultdict(lambda: {
     "scores": {},
 })
 
-# Quests / Events
 QUEST_POOL = [
-    {"task": "Rob someone", "command": "!rob", "reward": 100},
-    {"task": "Win a gamble", "command": "!gamble", "reward": 150},
-    {"task": "Use !daily", "command": "!daily", "reward": 75},
-    {"task": "Buy stock", "command": "!buy <stock> <amount>", "reward": 200},
-    {"task": "Reach 1 level up", "command": "Chat", "reward": 100},
+    {
+        "task": "Rob someone for at least 2,500 coins",
+        "command": "!rob @user",
+        "reward": 2000,
+        "event": "rob",
+        "req": {"min_stolen": 2500},
+    },
+    {
+        "task": "Win a gamble with a bet of at least 15,000",
+        "command": "!gamble 15000",
+        "reward": 3000,
+        "event": "gamble_win",
+        "req": {"min_bet": 15000},
+    },
+    {
+        "task": "Buy stocks worth at least 100,000 coins",
+        "command": "!buy <stock> <amount>",
+        "reward": 4500,
+        "event": "buy_stock",
+        "req": {"min_spend": 100000},
+    },
+    {
+        "task": "Reach a level-up (gain a level)",
+        "command": "Chat",
+        "reward": 1800,
+        "event": "level_up",
+        "req": {},
+    },
+    {
+        "task": "Claim your daily reward",
+        "command": "!daily",
+        "reward": 1200,
+        "event": "daily",
+        "req": {},
+    },
 ]
 EVENTS = {
     "Double XP": {"xp_mult": 2},
@@ -379,6 +408,49 @@ async def mc(ctx: commands.Context):
 # =========================
 # Utilities: File I/O
 # =========================
+
+def _today_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def load_quests():
+    data = _load_json(QUEST_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    return data
+
+def save_quests(d):
+    _save_json(QUEST_FILE, d)
+
+def _ensure_quest_shape(q: dict) -> dict:
+    # repairs older quest entries if needed
+    if not isinstance(q, dict):
+        return {}
+    q.setdefault("task", "")
+    q.setdefault("command", "")
+    q.setdefault("reward", 0)
+    q.setdefault("day", _today_utc())
+    q.setdefault("done", False)
+    return q
+
+def mark_quest_done(user_id: int, task_name: str) -> bool:
+    """If user has an active quest matching task_name, mark it done."""
+    uid = str(user_id)
+    quests = load_quests()
+    q = quests.get(uid)
+    if not q:
+        return False
+    q = _ensure_quest_shape(q)
+
+    # reset quest automatically if it's from a previous day
+    if q.get("day") != _today_utc():
+        return False
+
+    if q.get("task") == task_name and not q.get("done", False):
+        q["done"] = True
+        quests[uid] = q
+        save_quests(quests)
+        return True
+    return False
 
 def load_stickers():
     d = _load_json(STICKER_FILE, {"total": 0, "users": {}})
@@ -1238,6 +1310,9 @@ async def update_xp(user_id, guild_id, xp_amount):
             if role and member:
                 await member.add_roles(role)
 
+    if new_level > prev_level:
+    mark_quest_event(user_id, "level_up")
+
     guild = bot.get_guild(int(gid))
     if guild:
         await update_top_exp_role(guild)
@@ -1666,6 +1741,7 @@ async def daily(ctx):
     data["wallet"] += reward
     data["last_daily"] = now.timestamp()
     save_coins(coins)
+    mark_quest_event(ctx.author.id, "daily")
 
     await ctx.send(embed=discord.Embed(description=f"💰 Daily claimed: **{reward}** coins!", color=discord.Color.purple()))
 
@@ -1866,6 +1942,7 @@ async def rob(ctx, member: discord.Member = None):
         thief["last_rob"] = now
 
         save_coins(coins)
+        mark_quest_event(ctx.author.id, "rob", stolen=stolen)
         await ctx.send(embed=discord.Embed(
             description=f"💸 You robbed **{target_member.display_name}** and got **{stolen}** coins!",
             color=discord.Color.purple()
@@ -2235,6 +2312,7 @@ async def gamble(ctx, amount: str):
         )
 
     save_coins(coins)
+    mark_quest_event(ctx.author.id, "gamble_win", bet=bet)
     await ctx.send(embed=resp)
 
 # =========================
@@ -2401,6 +2479,7 @@ async def buy(ctx, *, raw: str):
     stock[item_name] = available - qty
     save_shop_stock(stock)
     save_coins(coins)
+    mark_quest_event(ctx.author.id, "buy_stock", spend=cost)
 
     inv = load_inventory()
     inv.setdefault(uid, {})
@@ -2748,31 +2827,66 @@ async def currentevent(ctx):
 
 @bot.command(name="quest", help="View your daily quest and reward.")
 async def quest(ctx):
-    user_id = str(ctx.author.id)
+    uid = str(ctx.author.id)
     quests = load_quests()
-    if user_id not in quests:
-        quests[user_id] = random.choice(QUEST_POOL)
+    today = _today_utc()
+
+    q = quests.get(uid)
+    if not q or (isinstance(q, dict) and q.get("day") != today):
+        base = random.choice(QUEST_POOL)
+        q = {
+            "task": base["task"],
+            "command": base["command"],
+            "reward": base["reward"],
+            "day": today,
+            "done": False
+        }
+        quests[uid] = q
         save_quests(quests)
-    q = quests[user_id]
+    else:
+        q = _ensure_quest_shape(q)
+
+    status = "✅ Completed" if q.get("done") else "❌ Not completed"
+
     embed = discord.Embed(
         title="📜 Your Daily Quest",
-        description=f"**Task:** {q['task']}\n**Command Hint:** `{q['command']}`\n**Reward:** 💰 {q['reward']} coins",
+        description=(
+            f"**Task:** {q['task']}\n"
+            f"**Command Hint:** `{q['command']}`\n"
+            f"**Reward:** 💰 {q['reward']} coins\n"
+            f"**Status:** {status}"
+        ),
         color=discord.Color.gold()
     )
     await ctx.send(embed=embed)
 
 @bot.command(name="complete", help="Complete your current quest and claim the reward.")
 async def complete(ctx):
-    user_id = str(ctx.author.id)
+    uid = str(ctx.author.id)
     quests = load_quests()
-    if user_id not in quests:
+    q = quests.get(uid)
+    if not q:
         return await ctx.send("❌ You have no active quest.")
-    coins = ensure_user_coins(user_id)
-    reward = quests[user_id]["reward"]
-    coins[user_id]["wallet"] += reward
-    del quests[user_id]
+
+    q = _ensure_quest_shape(q)
+
+    # expire old quests automatically
+    if q.get("day") != _today_utc():
+        del quests[uid]
+        save_quests(quests)
+        return await ctx.send("🕒 Your quest expired (new day). Use `!quest` to get a new one.")
+
+    if not q.get("done", False):
+        return await ctx.send(f"❌ You haven’t completed your quest yet: **{q['task']}**")
+
+    coins = ensure_user_coins(uid)
+    reward = int(q.get("reward", 0))
+    coins[uid]["wallet"] += reward
+
+    del quests[uid]
     save_coins(coins)
     save_quests(quests)
+
     await ctx.send(f"✅ Quest completed! You earned **{reward}** coins!")
 
 # =========================
