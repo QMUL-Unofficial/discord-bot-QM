@@ -378,14 +378,6 @@ async def mc(ctx: commands.Context):
 # =========================
 
 def load_stickers():
-    # structure:
-    # {
-    #   "total": 12,
-    #   "users": {
-    #     "123": {"count": 5},
-    #     "456": {"count": 7}
-    #   }
-    # }
     d = _load_json(STICKER_FILE, {"total": 0, "users": {}})
     if not isinstance(d, dict):
         d = {"total": 0, "users": {}}
@@ -393,10 +385,7 @@ def load_stickers():
     d.setdefault("users", {})
     if not isinstance(d["users"], dict):
         d["users"] = {}
-    try:
-        d["total"] = int(d["total"])
-    except Exception:
-        d["total"] = 0
+    d["total"] = int(d.get("total", 0) or 0)
     return d
 
 def save_stickers(d):
@@ -407,11 +396,9 @@ def add_stickers(user_id: int, amount: int = 1):
         return
     d = load_stickers()
     uid = str(user_id)
-
-    d["total"] = int(d.get("total", 0)) + amount
     d["users"].setdefault(uid, {})
-    d["users"][uid]["count"] = int(d["users"][uid].get("count", 0)) + amount
-
+    d["users"][uid]["count"] = int(d["users"][uid].get("count", 0) or 0) + amount
+    d["total"] = int(d.get("total", 0) or 0) + amount
     save_stickers(d)
 
 def load_swear_jar():
