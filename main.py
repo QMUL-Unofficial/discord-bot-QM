@@ -32,6 +32,7 @@ BANKROB_STEAL_MIN_PCT = 0.12   # 12% lower bound
 BANKROB_STEAL_MAX_PCT = 0.28   # 28% upper bound
 BANKROB_MIN_STEAL     = 100    # absolute minimum when success (matches your 100 bank threshold)
 BANKROB_MAX_STEAL_PCT_CAP = 0.40  # hard cap: never take more than 40% in a single success
+STICKER_FILE = "sticker.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -105,7 +106,7 @@ blackjack_lobbies = defaultdict(lambda: {
     "players": [],
     "bets": {},
     "dealer_hand": [],
-    "game_started": False,
+    "game_ted": False,
     "current_turn": 0,
     "hands": {},
     "scores": {},
