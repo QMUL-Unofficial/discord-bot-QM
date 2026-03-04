@@ -33,6 +33,7 @@ BANKROB_STEAL_MAX_PCT = 0.28   # 28% upper bound
 BANKROB_MIN_STEAL     = 100    # absolute minimum when success (matches your 100 bank threshold)
 BANKROB_MAX_STEAL_PCT_CAP = 0.40  # hard cap: never take more than 40% in a single success
 STICKER_FILE = "sticker.json"
+STARS_PER_DAY = 2
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -83,6 +84,7 @@ PACKAGE_FILES = [
     "prayer_notif_state.json",
     "ramadan_post_state.json",
     "swear_jar.json",
+    "sticker.json"
 ]
 
 # Economy / Items
@@ -617,6 +619,61 @@ def load_beg_stats():
 
 def save_beg_stats(d):
     _save_json(BEG_STATS_FILE, d)
+
+def _utc_day_key(ts: float | None = None) -> str:
+    dt = datetime.fromtimestamp(ts or time.time(), tz=timezone.utc)
+    return dt.strftime("%Y-%m-%d")
+
+def load_stickers():
+    d = _load_json(STICKER_FILE, {"total": 0, "users": {}, "daily": {}})
+    if not isinstance(d, dict):
+        d = {"total": 0, "users": {}, "daily": {}}
+
+    d.setdefault("total", 0)
+    d.setdefault("users", {})
+    d.setdefault("daily", {})  # giver_id -> {"day": "YYYY-MM-DD", "used": int}
+
+    if not isinstance(d["users"], dict):
+        d["users"] = {}
+    if not isinstance(d["daily"], dict):
+        d["daily"] = {}
+
+    d["total"] = int(d.get("total", 0) or 0)
+    return d
+
+def save_stickers(d):
+    _save_json(STICKER_FILE, d)
+
+def _get_giver_remaining(d: dict, giver_id: int) -> tuple[int, int, str]:
+    giver = str(giver_id)
+    today = _utc_day_key()
+
+    rec = d["daily"].get(giver)
+    if not isinstance(rec, dict) or rec.get("day") != today:
+        rec = {"day": today, "used": 0}
+        d["daily"][giver] = rec
+
+    used = int(rec.get("used", 0) or 0)
+    remaining = max(0, STARS_PER_DAY - used)
+    return remaining, used, today
+
+def _consume_giver(d: dict, giver_id: int, amount: int):
+    giver = str(giver_id)
+    today = _utc_day_key()
+
+    rec = d["daily"].get(giver)
+    if not isinstance(rec, dict) or rec.get("day") != today:
+        rec = {"day": today, "used": 0}
+        d["daily"][giver] = rec
+
+    rec["used"] = int(rec.get("used", 0) or 0) + amount
+
+def add_stickers_to_receiver(d: dict, receiver_id: int, amount: int):
+    uid = str(receiver_id)
+    d["users"].setdefault(uid, {})
+    d["users"][uid]["count"] = int(d["users"][uid].get("count", 0) or 0) + amount
+    d["total"] = int(d.get("total", 0) or 0) + amount
+
 
 # =========================
 # Snake (reaction + command controls)
@@ -1248,21 +1305,42 @@ async def star(ctx, member: discord.Member = None, amount: int = 1):
     if not member:
         return await ctx.send("❌ Could not find that member in this server.")
     if member.bot:
-        return await ctx.send("🤖 You can’t give stickers to bots.")
+        return await ctx.send("🤖 You can’t give stars to bots.")
     if member.id == ctx.author.id:
-        return await ctx.send("⭐ Self-star? Not allowed.")
+        return await ctx.send("⭐ You can’t star yourself.")
 
-    amount = max(1, min(25, int(amount)))
-
-    add_stickers(member.id, amount)
+    # parse requested amount
+    try:
+        amount = int(amount)
+    except Exception:
+        amount = 1
+    amount = max(1, min(25, amount))
 
     d = load_stickers()
-    user_total = int(d["users"].get(str(member.id), {}).get("count", 0))
+    remaining, used, today = _get_giver_remaining(d, ctx.author.id)
+
+    if remaining <= 0:
+        return await ctx.send(
+            f"⛔ You’ve already given **{STARS_PER_DAY}/{STARS_PER_DAY}** stars today (**{today} UTC**)."
+        )
+
+    # Auto-reduce to remaining
+    give = min(amount, remaining)
+
+    add_stickers_to_receiver(d, member.id, give)
+    _consume_giver(d, ctx.author.id, give)
+    save_stickers(d)
+
+    receiver_total = int(d["users"].get(str(member.id), {}).get("count", 0))
+    remaining_after = remaining - give
 
     embed = discord.Embed(
         title="⭐ Gold Star!",
-        description=f"{ctx.author.mention} gave {member.mention} **{amount}** ⭐!\n"
-                    f"{member.display_name} now has **{user_total}** ⭐ total.",
+        description=(
+            f"{ctx.author.mention} gave {member.mention} **{give}** ⭐!\n"
+            f"{member.display_name} now has **{receiver_total}** ⭐ total.\n\n"
+            f"Daily limit: **{STARS_PER_DAY}** — you have **{remaining_after}** left today (**{today} UTC**)."
+        ),
         color=discord.Color.gold()
     )
     await ctx.send(embed=embed)
