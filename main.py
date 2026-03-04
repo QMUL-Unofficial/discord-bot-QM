@@ -1252,7 +1252,6 @@ async def threaten(ctx, member: discord.Member):
 
 @bot.command(name="star", help="Give someone a ⭐ gold star sticker. Usage: !star @user [amount]")
 async def star(ctx, member: discord.Member = None, amount: int = 1):
-    # Require mention-only like your rob/stab behaviour
     target_id = only_mention_target(ctx)
     if target_id is None:
         return await ctx.send("❌ Please mention exactly one user: `!star @user [amount]`")
@@ -1260,23 +1259,17 @@ async def star(ctx, member: discord.Member = None, amount: int = 1):
     member = ctx.guild.get_member(target_id) or await _get_member_safe(ctx.guild, target_id)
     if not member:
         return await ctx.send("❌ Could not find that member in this server.")
-
     if member.bot:
         return await ctx.send("🤖 You can’t give stickers to bots.")
     if member.id == ctx.author.id:
-        return await ctx.send("⭐ Self-star? Bold. (Not allowed.)")
+        return await ctx.send("⭐ Self-star? Not allowed.")
 
-    # Clamp amount to avoid spam
-    try:
-        amount = int(amount)
-    except Exception:
-        amount = 1
-    amount = max(1, min(25, amount))
+    amount = max(1, min(25, int(amount)))
 
     add_stickers(member.id, amount)
 
     d = load_stickers()
-    user_total = int((d.get("users") or {}).get(str(member.id), {}).get("count", 0))
+    user_total = int(d["users"].get(str(member.id), {}).get("count", 0))
 
     embed = discord.Embed(
         title="⭐ Gold Star!",
@@ -1292,7 +1285,7 @@ async def stars(ctx, member: discord.Member = None):
     member = member or ctx.author
     d = load_stickers()
     uid = str(member.id)
-    user_total = int((d.get("users") or {}).get(uid, {}).get("count", 0))
+    user_total = int(d["users"].get(uid, {}).get("count", 0))
     total = int(d.get("total", 0))
 
     embed = discord.Embed(title="⭐ Sticker Count", color=discord.Color.gold())
@@ -1303,21 +1296,14 @@ async def stars(ctx, member: discord.Member = None):
 
 @bot.command(name="starleaderboard", help="Top ⭐ holders. Usage: !starleaderboard [count]")
 async def starleaderboard(ctx, count: int = 10):
-    try:
-        count = int(count)
-    except Exception:
-        count = 10
-    count = max(3, min(25, count))
+    count = max(3, min(25, int(count)))
 
     d = load_stickers()
-    users = d.get("users") or {}
+    users = d.get("users", {})
 
     rows = []
     for uid, rec in users.items():
-        try:
-            c = int(rec.get("count", 0))
-        except Exception:
-            c = 0
+        c = int(rec.get("count", 0) or 0)
         if c <= 0:
             continue
         m = ctx.guild.get_member(int(uid))
