@@ -1311,7 +1311,7 @@ async def update_xp(user_id, guild_id, xp_amount):
                 await member.add_roles(role)
 
     if new_level > prev_level:
-    mark_quest_event(user_id, "level_up")
+        mark_quest_event(user_id, "level_up")
 
     guild = bot.get_guild(int(gid))
     if guild:
