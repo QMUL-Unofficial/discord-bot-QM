@@ -377,6 +377,43 @@ async def mc(ctx: commands.Context):
 # Utilities: File I/O
 # =========================
 
+def load_stickers():
+    # structure:
+    # {
+    #   "total": 12,
+    #   "users": {
+    #     "123": {"count": 5},
+    #     "456": {"count": 7}
+    #   }
+    # }
+    d = _load_json(STICKER_FILE, {"total": 0, "users": {}})
+    if not isinstance(d, dict):
+        d = {"total": 0, "users": {}}
+    d.setdefault("total", 0)
+    d.setdefault("users", {})
+    if not isinstance(d["users"], dict):
+        d["users"] = {}
+    try:
+        d["total"] = int(d["total"])
+    except Exception:
+        d["total"] = 0
+    return d
+
+def save_stickers(d):
+    _save_json(STICKER_FILE, d)
+
+def add_stickers(user_id: int, amount: int = 1):
+    if amount <= 0:
+        return
+    d = load_stickers()
+    uid = str(user_id)
+
+    d["total"] = int(d.get("total", 0)) + amount
+    d["users"].setdefault(uid, {})
+    d["users"][uid]["count"] = int(d["users"][uid].get("count", 0)) + amount
+
+    save_stickers(d)
+
 def load_swear_jar():
     jar = _load_json(SWEAR_JAR_FILE, {})
     # Repair structure
@@ -1212,6 +1249,100 @@ async def threaten(ctx, member: discord.Member):
 
     chosen = random.choice(threats)
     await ctx.send(f"{ctx.author.mention} threatens {member.mention}:\n> {chosen}")
+
+@bot.command(name="star", help="Give someone a ⭐ gold star sticker. Usage: !star @user [amount]")
+async def star(ctx, member: discord.Member = None, amount: int = 1):
+    # Require mention-only like your rob/stab behaviour
+    target_id = only_mention_target(ctx)
+    if target_id is None:
+        return await ctx.send("❌ Please mention exactly one user: `!star @user [amount]`")
+
+    member = ctx.guild.get_member(target_id) or await _get_member_safe(ctx.guild, target_id)
+    if not member:
+        return await ctx.send("❌ Could not find that member in this server.")
+
+    if member.bot:
+        return await ctx.send("🤖 You can’t give stickers to bots.")
+    if member.id == ctx.author.id:
+        return await ctx.send("⭐ Self-star? Bold. (Not allowed.)")
+
+    # Clamp amount to avoid spam
+    try:
+        amount = int(amount)
+    except Exception:
+        amount = 1
+    amount = max(1, min(25, amount))
+
+    add_stickers(member.id, amount)
+
+    d = load_stickers()
+    user_total = int((d.get("users") or {}).get(str(member.id), {}).get("count", 0))
+
+    embed = discord.Embed(
+        title="⭐ Gold Star!",
+        description=f"{ctx.author.mention} gave {member.mention} **{amount}** ⭐!\n"
+                    f"{member.display_name} now has **{user_total}** ⭐ total.",
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="stars", help="Check ⭐ count. Usage: !stars [@user]")
+async def stars(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    d = load_stickers()
+    uid = str(member.id)
+    user_total = int((d.get("users") or {}).get(uid, {}).get("count", 0))
+    total = int(d.get("total", 0))
+
+    embed = discord.Embed(title="⭐ Sticker Count", color=discord.Color.gold())
+    embed.add_field(name="Server total", value=f"**{total}** ⭐", inline=False)
+    embed.add_field(name=f"{member.display_name}", value=f"**{user_total}** ⭐", inline=False)
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="starleaderboard", help="Top ⭐ holders. Usage: !starleaderboard [count]")
+async def starleaderboard(ctx, count: int = 10):
+    try:
+        count = int(count)
+    except Exception:
+        count = 10
+    count = max(3, min(25, count))
+
+    d = load_stickers()
+    users = d.get("users") or {}
+
+    rows = []
+    for uid, rec in users.items():
+        try:
+            c = int(rec.get("count", 0))
+        except Exception:
+            c = 0
+        if c <= 0:
+            continue
+        m = ctx.guild.get_member(int(uid))
+        if not m or m.bot:
+            continue
+        rows.append((m, c))
+
+    if not rows:
+        return await ctx.send("⭐ No stickers yet.")
+
+    rows.sort(key=lambda t: t[1], reverse=True)
+
+    lines = []
+    for i, (m, c) in enumerate(rows[:count], start=1):
+        crown = " 👑" if i == 1 else ""
+        you = " ← you" if m.id == ctx.author.id else ""
+        lines.append(f"**{i}.** {m.mention}{crown} — **{c}** ⭐{you}")
+
+    embed = discord.Embed(
+        title="⭐ Gold Star Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=f"Server total: {int(d.get('total', 0))} ⭐")
+    await ctx.send(embed=embed)
 
 @bot.command(name="warn", help="Warn an individual for profanity")
 async def warn(ctx, member: discord.Member):
