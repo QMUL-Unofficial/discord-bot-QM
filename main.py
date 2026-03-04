@@ -1218,7 +1218,7 @@ async def update_xp(user_id, guild_id, xp_amount):
     user["level"] = new_level
     save_data(data)
 
-    if new_level > prev_level and new_level % 5 == 0:
+    if new_level > prev_level and new_level % 50 == 0:
         channel = bot.get_channel(1433417692320239666)
         if channel:
             u = await bot.fetch_user(user_id)
@@ -1565,17 +1565,30 @@ async def suggest(ctx, *, message: str):
     })
     save_suggestions(suggestions)
 
-    channel = bot.get_channel(SUGGESTION_CHANNEL_ID)
-    if not channel:
-        return await ctx.send("❌ Suggestion channel not found. Please contact an admin.")
-
     embed = discord.Embed(title="📬 New Suggestion", description=message, color=discord.Color.teal())
     embed.set_footer(text=f"Suggested by {ctx.author.display_name}")
-    msg = await channel.send(embed=embed)
-    await msg.add_reaction("👍")
-    await msg.add_reaction("👎")
-    await ctx.send("✅ Your suggestion has been submitted!")
 
+    # Prefer current guild cache, then fetch as fallback
+    channel = ctx.guild.get_channel(SUGGESTION_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(SUGGESTION_CHANNEL_ID)
+        except Exception:
+            channel = None
+
+    if not channel:
+        return await ctx.send("❌ Suggestion channel not found / I can't access it. Check channel ID + permissions.")
+
+    try:
+        msg = await channel.send(embed=embed)
+        await msg.add_reaction("👍")
+        await msg.add_reaction("👎")
+    except discord.Forbidden:
+        return await ctx.send("❌ I can't post there (need View Channel, Send Messages, Embed Links, Add Reactions).")
+    except discord.HTTPException:
+        return await ctx.send("❌ Discord rejected the message. Try again later.")
+
+    await ctx.send("✅ Your suggestion has been submitted!")
 # =========================
 # Economy: wallet/bank/daily/beg/donate/pay
 # =========================
@@ -3242,6 +3255,26 @@ async def pay_dividends():
         channel = bot.get_channel(MARKET_ANNOUNCE_CHANNEL_ID)
         if channel:
             await channel.send("💸 Dividends have been paid out to all shareholders!")
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title=f"Welcome to {member.guild.name} 🎓",
+        description=(
+            f"{member.mention}, we're glad to have you here!\n\n"
+            "Make sure to check out the channels and have fun!"
+        ),
+        color=discord.Color.green()
+    )
+
+    # User avatar on the right (like your screenshot)
+    embed.set_thumbnail(url=member.display_avatar.url)
+
+    await channel.send(embed=embed)
 
 # =========================
 # Scheduled task (every 5 hours)
