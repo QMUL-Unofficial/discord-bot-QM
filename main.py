@@ -924,11 +924,36 @@ async def snake_cmd(ctx, action: str = "start"):
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    # ignore bot’s own reactions
-    if payload.user_id == (bot.user.id if bot.user else None):
+
+    # ignore bot reactions
+    if payload.user_id == bot.user.id:
         return
 
-    guild = bot.get_guild(payload.guild_id)
+    # ⭐ Reaction -> Golden Star
+    if str(payload.emoji) == "⭐":
+        guild = bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+
+        channel = guild.get_channel(payload.channel_id)
+        message = await channel.fetch_message(payload.message_id)
+
+        giver_id = payload.user_id
+        receiver = message.author
+
+        # can't star yourself or bots
+        if receiver.id == giver_id or receiver.bot:
+            return
+
+        d = load_stickers()
+        remaining, used, today = _get_giver_remaining(d, giver_id)
+
+        if remaining <= 0:
+            return
+
+        add_stickers_to_receiver(d, receiver.id, 1)
+        _consume_giver(d, giver_id, 1, message_id=payload.message_id)
+        save_stickers(d)
 
     # ===== Role Colour Handler =====
     try:
@@ -3404,64 +3429,6 @@ async def on_member_join(member: discord.Member):
     embed.set_thumbnail(url=member.display_avatar.url)
 
     await channel.send(embed=embed)
-# ===== ⭐ Star Reaction -> Gold Star Sticker =====
-if payload.guild_id and str(payload.emoji) == "⭐":
-    try:
-        guild = bot.get_guild(payload.guild_id)
-        if not guild:
-            return
-
-        giver_id = payload.user_id
-
-        channel = guild.get_channel(payload.channel_id)
-        if channel is None:
-            # fallback if not cached
-            channel = await bot.fetch_channel(payload.channel_id)
-
-        msg = await channel.fetch_message(payload.message_id)
-        receiver = msg.author
-
-        # No stars to bots, and no self-starring
-        if receiver.bot or receiver.id == giver_id:
-            try:
-                await msg.remove_reaction("⭐", discord.Object(id=giver_id))
-            except Exception:
-                pass
-            return
-
-        d = load_stickers()
-        remaining, used, today = _get_giver_remaining(d, giver_id)
-
-        # Prevent double-counting if user removes and re-adds ⭐ on same message
-        rec = d["daily"].get(str(giver_id), {})
-        msgs = rec.get("msgs") if isinstance(rec, dict) else None
-        if isinstance(msgs, list) and payload.message_id in msgs:
-            return
-
-        if remaining <= 0:
-            # Out of daily stars: remove their reaction
-            try:
-                await msg.remove_reaction("⭐", discord.Object(id=giver_id))
-            except Exception:
-                pass
-
-            # Optional small feedback (auto-deletes)
-            try:
-                await channel.send(
-                    f"⛔ <@{giver_id}> you’ve used **{STARS_PER_DAY}/{STARS_PER_DAY}** stars today (**{today} UTC**).",
-                    delete_after=5
-                )
-            except Exception:
-                pass
-            return
-
-        # Give 1 sticker + consume 1 daily use
-        add_stickers_to_receiver(d, receiver.id, 1)
-        _consume_giver(d, giver_id, 1, message_id=payload.message_id)
-        save_stickers(d)
-
-    except Exception as e:
-        print(f"[StarReact] failed: {type(e).__name__}: {e}")
 
 # =========================
 # Scheduled task (every 5 hours)
