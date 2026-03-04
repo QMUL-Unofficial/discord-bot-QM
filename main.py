@@ -955,6 +955,20 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         _consume_giver(d, giver_id, 1, message_id=payload.message_id)
         save_stickers(d)
 
+            # Give 1 sticker + consume 1 daily use
+        add_stickers_to_receiver(d, receiver.id, 1)
+        _consume_giver(d, giver_id, 1, message_id=payload.message_id)
+        save_stickers(d)
+        
+        # Temporary confirmation message
+        try:
+            await channel.send(
+                f"⭐ Added a star for **{receiver.display_name}**!",
+                delete_after=4
+            )
+        except Exception:
+            pass
+
     # ===== Role Colour Handler =====
     try:
         with open("role_colour_msg.txt", "r") as f:
