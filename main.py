@@ -722,23 +722,38 @@ def _get_giver_remaining(d: dict, giver_id: int) -> tuple[int, int, str]:
 
     rec = d["daily"].get(giver)
     if not isinstance(rec, dict) or rec.get("day") != today:
-        rec = {"day": today, "used": 0}
+        rec = {"day": today, "used": 0, "msgs": []}
         d["daily"][giver] = rec
+
+    # ensure keys exist
+    rec.setdefault("used", 0)
+    rec.setdefault("msgs", [])
 
     used = int(rec.get("used", 0) or 0)
     remaining = max(0, STARS_PER_DAY - used)
     return remaining, used, today
 
-def _consume_giver(d: dict, giver_id: int, amount: int):
+def _consume_giver(d: dict, giver_id: int, amount: int, *, message_id: int | None = None):
     giver = str(giver_id)
     today = _utc_day_key()
 
     rec = d["daily"].get(giver)
     if not isinstance(rec, dict) or rec.get("day") != today:
-        rec = {"day": today, "used": 0}
+        rec = {"day": today, "used": 0, "msgs": []}
         d["daily"][giver] = rec
 
+    rec.setdefault("used", 0)
+    rec.setdefault("msgs", [])
+
     rec["used"] = int(rec.get("used", 0) or 0) + amount
+
+    # Track message so remove/re-add can't double count
+    if message_id is not None:
+        if message_id not in rec["msgs"]:
+            rec["msgs"].append(message_id)
+            # optional cap so it doesn't grow forever
+            if len(rec["msgs"]) > 500:
+                rec["msgs"] = rec["msgs"][-500:]
 
 def add_stickers_to_receiver(d: dict, receiver_id: int, amount: int):
     uid = str(receiver_id)
@@ -3389,6 +3404,64 @@ async def on_member_join(member: discord.Member):
     embed.set_thumbnail(url=member.display_avatar.url)
 
     await channel.send(embed=embed)
+# ===== ⭐ Star Reaction -> Gold Star Sticker =====
+if payload.guild_id and str(payload.emoji) == "⭐":
+    try:
+        guild = bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+
+        giver_id = payload.user_id
+
+        channel = guild.get_channel(payload.channel_id)
+        if channel is None:
+            # fallback if not cached
+            channel = await bot.fetch_channel(payload.channel_id)
+
+        msg = await channel.fetch_message(payload.message_id)
+        receiver = msg.author
+
+        # No stars to bots, and no self-starring
+        if receiver.bot or receiver.id == giver_id:
+            try:
+                await msg.remove_reaction("⭐", discord.Object(id=giver_id))
+            except Exception:
+                pass
+            return
+
+        d = load_stickers()
+        remaining, used, today = _get_giver_remaining(d, giver_id)
+
+        # Prevent double-counting if user removes and re-adds ⭐ on same message
+        rec = d["daily"].get(str(giver_id), {})
+        msgs = rec.get("msgs") if isinstance(rec, dict) else None
+        if isinstance(msgs, list) and payload.message_id in msgs:
+            return
+
+        if remaining <= 0:
+            # Out of daily stars: remove their reaction
+            try:
+                await msg.remove_reaction("⭐", discord.Object(id=giver_id))
+            except Exception:
+                pass
+
+            # Optional small feedback (auto-deletes)
+            try:
+                await channel.send(
+                    f"⛔ <@{giver_id}> you’ve used **{STARS_PER_DAY}/{STARS_PER_DAY}** stars today (**{today} UTC**).",
+                    delete_after=5
+                )
+            except Exception:
+                pass
+            return
+
+        # Give 1 sticker + consume 1 daily use
+        add_stickers_to_receiver(d, receiver.id, 1)
+        _consume_giver(d, giver_id, 1, message_id=payload.message_id)
+        save_stickers(d)
+
+    except Exception as e:
+        print(f"[StarReact] failed: {type(e).__name__}: {e}")
 
 # =========================
 # Scheduled task (every 5 hours)
