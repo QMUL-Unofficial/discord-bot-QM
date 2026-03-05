@@ -28,12 +28,11 @@ COVER_BOT_ID = 684773505157431347
 COVER_INVITE_URL = "https://top.gg/bot/684773505157431347/invite?campaign=210-3"
 RESTRICT_GUILD_NAME = "QMUL - Unofficial"
 MONEY_LOCKS = defaultdict(asyncio.Lock)
+ALWAYS_BANKROB_USER_ID = 734468552903360594  # always succeed on !bankrob for this user
 BANKROB_STEAL_MIN_PCT = 0.12   # 12% lower bound
 BANKROB_STEAL_MAX_PCT = 0.28   # 28% upper bound
 BANKROB_MIN_STEAL     = 100    # absolute minimum when success (matches your 100 bank threshold)
 BANKROB_MAX_STEAL_PCT_CAP = 0.40  # hard cap: never take more than 40% in a single success
-STICKER_FILE = "sticker.json"
-STARS_PER_DAY = 2
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -58,6 +57,7 @@ TRIVIA_STATS_FILE = "trivia_stats.json"
 TRIVIA_STREAKS_FILE = "trivia_streaks.json"
 BEG_STATS_FILE = "beg_stats.json"
 SWEAR_JAR_FILE = "swear_jar.json"
+STICKER_FILE = "sticker.json"
 
 ANNOUNCEMENT_CHANNEL_ID = 1433248053665726547
 WELCOME_CHANNEL_ID = 1433248053665726546
@@ -84,7 +84,7 @@ PACKAGE_FILES = [
     "prayer_notif_state.json",
     "ramadan_post_state.json",
     "swear_jar.json",
-    "sticker.json"
+    "sticker.json",
 ]
 
 # Economy / Items
@@ -108,20 +108,20 @@ blackjack_lobbies = defaultdict(lambda: {
     "players": [],
     "bets": {},
     "dealer_hand": [],
-    "game_ted": False,
+    "game_started": False,
     "current_turn": 0,
     "hands": {},
     "scores": {},
 })
 
+# Quests / Events
 QUEST_POOL = [
-    {"task": "Rob someone", "command": "!rob @user", "reward": 100},
-    {"task": "Win a gamble", "command": "!gamble <amount>", "reward": 150},
+    {"task": "Rob someone", "command": "!rob", "reward": 100},
+    {"task": "Win a gamble", "command": "!gamble", "reward": 150},
     {"task": "Use !daily", "command": "!daily", "reward": 75},
     {"task": "Buy stock", "command": "!buy <stock> <amount>", "reward": 200},
     {"task": "Reach 1 level up", "command": "Chat", "reward": 100},
 ]
-
 EVENTS = {
     "Double XP": {"xp_mult": 2},
     "Crash Week": {"crash_odds": 0.3},
@@ -379,15 +379,20 @@ async def mc(ctx: commands.Context):
 # =========================
 # Utilities: File I/O
 # =========================
-
 def load_stickers():
-    d = _load_json(STICKER_FILE, {"total": 0, "users": {}})
+    d = _load_json(STICKER_FILE, {"total": 0, "users": {}, "daily": {}})
     if not isinstance(d, dict):
-        d = {"total": 0, "users": {}}
+        d = {"total": 0, "users": {}, "daily": {}}
+
     d.setdefault("total", 0)
     d.setdefault("users", {})
+    d.setdefault("daily", {})  # giver_id -> {"day": "YYYY-MM-DD", "used": int}
+
     if not isinstance(d["users"], dict):
         d["users"] = {}
+    if not isinstance(d["daily"], dict):
+        d["daily"] = {}
+
     d["total"] = int(d.get("total", 0) or 0)
     return d
 
@@ -403,6 +408,12 @@ def add_stickers(user_id: int, amount: int = 1):
     d["users"][uid]["count"] = int(d["users"][uid].get("count", 0) or 0) + amount
     d["total"] = int(d.get("total", 0) or 0) + amount
     save_stickers(d)
+
+def add_stickers_to_receiver(d: dict, receiver_id: int, amount: int):
+    uid = str(receiver_id)
+    d["users"].setdefault(uid, {})
+    d["users"][uid]["count"] = int(d["users"][uid].get("count", 0) or 0) + amount
+    d["total"] = int(d.get("total", 0) or 0) + amount
 
 def load_swear_jar():
     jar = _load_json(SWEAR_JAR_FILE, {})
@@ -620,76 +631,6 @@ def load_beg_stats():
 def save_beg_stats(d):
     _save_json(BEG_STATS_FILE, d)
 
-def _utc_day_key(ts: float | None = None) -> str:
-    dt = datetime.fromtimestamp(ts or time.time(), tz=timezone.utc)
-    return dt.strftime("%Y-%m-%d")
-
-def load_stickers():
-    d = _load_json(STICKER_FILE, {"total": 0, "users": {}, "daily": {}})
-    if not isinstance(d, dict):
-        d = {"total": 0, "users": {}, "daily": {}}
-
-    d.setdefault("total", 0)
-    d.setdefault("users", {})
-    d.setdefault("daily", {})  # giver_id -> {"day": "YYYY-MM-DD", "used": int}
-
-    if not isinstance(d["users"], dict):
-        d["users"] = {}
-    if not isinstance(d["daily"], dict):
-        d["daily"] = {}
-
-    d["total"] = int(d.get("total", 0) or 0)
-    return d
-
-def save_stickers(d):
-    _save_json(STICKER_FILE, d)
-
-def _get_giver_remaining(d: dict, giver_id: int) -> tuple[int, int, str]:
-    giver = str(giver_id)
-    today = _utc_day_key()
-
-    rec = d["daily"].get(giver)
-    if not isinstance(rec, dict) or rec.get("day") != today:
-        rec = {"day": today, "used": 0, "msgs": []}
-        d["daily"][giver] = rec
-
-    # ensure keys exist
-    rec.setdefault("used", 0)
-    rec.setdefault("msgs", [])
-
-    used = int(rec.get("used", 0) or 0)
-    remaining = max(0, STARS_PER_DAY - used)
-    return remaining, used, today
-
-def _consume_giver(d: dict, giver_id: int, amount: int, *, message_id: int | None = None):
-    giver = str(giver_id)
-    today = _utc_day_key()
-
-    rec = d["daily"].get(giver)
-    if not isinstance(rec, dict) or rec.get("day") != today:
-        rec = {"day": today, "used": 0, "msgs": []}
-        d["daily"][giver] = rec
-
-    rec.setdefault("used", 0)
-    rec.setdefault("msgs", [])
-
-    rec["used"] = int(rec.get("used", 0) or 0) + amount
-
-    # Track message so remove/re-add can't double count
-    if message_id is not None:
-        if message_id not in rec["msgs"]:
-            rec["msgs"].append(message_id)
-            # optional cap so it doesn't grow forever
-            if len(rec["msgs"]) > 500:
-                rec["msgs"] = rec["msgs"][-500:]
-
-def add_stickers_to_receiver(d: dict, receiver_id: int, amount: int):
-    uid = str(receiver_id)
-    d["users"].setdefault(uid, {})
-    d["users"][uid]["count"] = int(d["users"][uid].get("count", 0) or 0) + amount
-    d["total"] = int(d.get("total", 0) or 0) + amount
-
-
 # =========================
 # Snake (reaction + command controls)
 # =========================
@@ -856,27 +797,44 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if bot.user and payload.user_id == bot.user.id:
         return
 
-    guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
-
-    # =========================
-    # ⭐ Reaction -> Gold Star
-    # =========================
-    if str(payload.emoji) == "⭐":
+    # ---------- helpers ----------
+    async def get_guild_channel_message():
+        guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
         if not guild:
-            return
+            return None, None, None
 
         channel = guild.get_channel(payload.channel_id)
         if channel is None:
             try:
                 channel = await bot.fetch_channel(payload.channel_id)
             except Exception:
-                channel = None
-        if not channel:
-            return
+                return guild, None, None
 
         try:
             message = await channel.fetch_message(payload.message_id)
         except Exception:
+            return guild, channel, None
+
+        return guild, channel, message
+
+    async def get_member(guild: discord.Guild):
+        # payload.member is only populated for some raw events
+        member = payload.member or guild.get_member(payload.user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(payload.user_id)
+            except Exception:
+                return None
+        return member
+
+    emoji_str = str(payload.emoji)
+
+    # =========================
+    # ⭐ Reaction -> Gold Star
+    # =========================
+    if emoji_str == "⭐":
+        guild, channel, message = await get_guild_channel_message()
+        if not guild or not channel or not message:
             return
 
         giver_id = payload.user_id
@@ -891,7 +849,9 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         # block double-counting the same message in the same day
         giver_key = str(giver_id)
         today = _utc_day_key()
-        rec = d.get("daily", {}).get(giver_key)
+        daily = d.setdefault("daily", {})
+        rec = daily.get(giver_key)
+
         already_counted = (
             isinstance(rec, dict)
             and rec.get("day") == today
@@ -917,11 +877,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             )
         except Exception:
             pass
-
-        # Don't `return` here, because other handlers (role colours / snake) might also
-        # be on the same message in some servers. If you want to stop processing after
-        # a star, uncomment:
-        # return
+        # NOTE: do NOT return — let other handlers run too
 
     # =========================
     # 🎨 Role Colour Handler
@@ -929,25 +885,28 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     try:
         with open("role_colour_msg.txt", "r") as f:
             target_msg_id = int(f.read().strip())
-    except FileNotFoundError:
-        target_msg_id = None
     except Exception:
         target_msg_id = None
 
     if target_msg_id and payload.message_id == target_msg_id:
+        guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
         if not guild:
             return
 
-        member = payload.member or guild.get_member(payload.user_id)
+        member = await get_member(guild)
         if not member or member.bot:
             return
 
-        role_name = ROLE_COLOR_EMOJIS.get(str(payload.emoji))
+        role_name = ROLE_COLOR_EMOJIS.get(emoji_str)
         if role_name:
+            # get or create the role
             role = discord.utils.get(guild.roles, name=role_name)
-            if not role:
+            if role is None:
                 try:
-                    role = await guild.create_role(name=role_name, colour=discord.Colour.default())
+                    role = await guild.create_role(
+                        name=role_name,
+                        colour=discord.Colour.default()
+                    )
                 except discord.Forbidden:
                     role = None
 
@@ -957,14 +916,14 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     r = discord.utils.get(guild.roles, name=rname)
                     if r and r in member.roles and r.name != role_name:
                         try:
-                            await member.remove_roles(r)
+                            await member.remove_roles(r, reason="Role colour change")
                         except Exception:
                             pass
 
                 # add chosen role
                 if role not in member.roles:
                     try:
-                        await member.add_roles(role)
+                        await member.add_roles(role, reason="Role colour choice")
                     except Exception:
                         pass
 
@@ -975,11 +934,12 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                         channel = await bot.fetch_channel(payload.channel_id)
                     except Exception:
                         channel = None
+
                 if channel:
                     try:
                         msg = await channel.fetch_message(payload.message_id)
                         for reaction in msg.reactions:
-                            if str(reaction.emoji) != str(payload.emoji):
+                            if str(reaction.emoji) != emoji_str:
                                 async for u in reaction.users():
                                     if u.id == member.id:
                                         try:
@@ -996,21 +956,12 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     state = SNAKE_GAMES.get(ch_id)
 
     if state and state.get("msg_id") and payload.message_id == state["msg_id"]:
-        emoji = str(payload.emoji)
-        action = SNAKE_CONTROLS.get(emoji)
+        action = SNAKE_CONTROLS.get(emoji_str)
         if not action:
             return
 
-        if not guild:
-            return
-
-        channel = guild.get_channel(ch_id)
-        if channel is None:
-            try:
-                channel = await bot.fetch_channel(ch_id)
-            except Exception:
-                channel = None
-        if not channel:
+        guild, channel, _message = await get_guild_channel_message()
+        if not guild or not channel:
             return
 
         if action == "reset":
@@ -1018,7 +969,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             await _snake_render(channel, SNAKE_GAMES[ch_id])
             return
 
-        if state["is_out"]:
+        if state.get("is_out"):
             await channel.send(embed=discord.Embed(
                 title="Game Over",
                 description=f"Scored: **{state['points']}**",
@@ -1028,7 +979,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
         _snake_move(state, action)
 
-        if state["is_out"]:
+        if state.get("is_out"):
             await _snake_render(channel, state)
             await channel.send(embed=discord.Embed(
                 title="Game Over",
@@ -1037,27 +988,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             ))
         else:
             await _snake_render(channel, state)
-
-# =========================
-# Trivia
-# =========================
-def load_trivia_stats():
-    return _load_json(TRIVIA_STATS_FILE, {})
-
-def save_trivia_stats(d):
-    _save_json(TRIVIA_STATS_FILE, d)
-
-def load_trivia_streaks(): return _load_json(TRIVIA_STREAKS_FILE, {})
-def save_trivia_streaks(d): _save_json(TRIVIA_STREAKS_FILE, d)
-
-def add_trivia_result(uid: str, category: str, correct: bool):
-    stats = load_trivia_stats()
-    user = stats.setdefault(uid, {})
-    cat = user.setdefault(category, {"correct": 0, "attempts": 0})
-    cat["attempts"] += 1
-    if correct:
-        cat["correct"] += 1
-    save_trivia_stats(stats)
 
 import aiohttp
 
@@ -1354,8 +1284,6 @@ async def update_xp(user_id, guild_id, xp_amount):
             if role and member:
                 await member.add_roles(role)
 
-    if new_level > prev_level:
-
     guild = bot.get_guild(int(gid))
     if guild:
         await update_top_exp_role(guild)
@@ -1412,107 +1340,6 @@ async def threaten(ctx, member: discord.Member):
 
     chosen = random.choice(threats)
     await ctx.send(f"{ctx.author.mention} threatens {member.mention}:\n> {chosen}")
-
-@bot.command(name="star", help="Give someone a ⭐ gold star sticker. Usage: !star @user [amount]")
-async def star(ctx, member: discord.Member = None, amount: int = 1):
-    target_id = only_mention_target(ctx)
-    if target_id is None:
-        return await ctx.send("❌ Please mention exactly one user: `!star @user [amount]`")
-
-    member = ctx.guild.get_member(target_id) or await _get_member_safe(ctx.guild, target_id)
-    if not member:
-        return await ctx.send("❌ Could not find that member in this server.")
-    if member.bot:
-        return await ctx.send("🤖 You can’t give stars to bots.")
-    if member.id == ctx.author.id:
-        return await ctx.send("⭐ You can’t star yourself.")
-
-    # parse requested amount
-    try:
-        amount = int(amount)
-    except Exception:
-        amount = 1
-    amount = max(1, min(25, amount))
-
-    d = load_stickers()
-    remaining, used, today = _get_giver_remaining(d, ctx.author.id)
-
-    if remaining <= 0:
-        return await ctx.send(
-            f"⛔ You’ve already given **{STARS_PER_DAY}/{STARS_PER_DAY}** stars today (**{today} UTC**)."
-        )
-
-    # Auto-reduce to remaining
-    give = min(amount, remaining)
-
-    add_stickers_to_receiver(d, member.id, give)
-    _consume_giver(d, ctx.author.id, give)
-    save_stickers(d)
-
-    receiver_total = int(d["users"].get(str(member.id), {}).get("count", 0))
-    remaining_after = remaining - give
-
-    embed = discord.Embed(
-        title="⭐ Gold Star!",
-        description=(
-            f"{ctx.author.mention} gave {member.mention} **{give}** ⭐!\n"
-            f"{member.display_name} now has **{receiver_total}** ⭐ total.\n\n"
-            f"Daily limit: **{STARS_PER_DAY}** — you have **{remaining_after}** left today (**{today} UTC**)."
-        ),
-        color=discord.Color.gold()
-    )
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="stars", help="Check ⭐ count. Usage: !stars [@user]")
-async def stars(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    d = load_stickers()
-    uid = str(member.id)
-    user_total = int(d["users"].get(uid, {}).get("count", 0))
-    total = int(d.get("total", 0))
-
-    embed = discord.Embed(title="⭐ Sticker Count", color=discord.Color.gold())
-    embed.add_field(name="Server total", value=f"**{total}** ⭐", inline=False)
-    embed.add_field(name=f"{member.display_name}", value=f"**{user_total}** ⭐", inline=False)
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="starleaderboard", help="Top ⭐ holders. Usage: !starleaderboard [count]")
-async def starleaderboard(ctx, count: int = 10):
-    count = max(3, min(25, int(count)))
-
-    d = load_stickers()
-    users = d.get("users", {})
-
-    rows = []
-    for uid, rec in users.items():
-        c = int(rec.get("count", 0) or 0)
-        if c <= 0:
-            continue
-        m = ctx.guild.get_member(int(uid))
-        if not m or m.bot:
-            continue
-        rows.append((m, c))
-
-    if not rows:
-        return await ctx.send("⭐ No stickers yet.")
-
-    rows.sort(key=lambda t: t[1], reverse=True)
-
-    lines = []
-    for i, (m, c) in enumerate(rows[:count], start=1):
-        crown = " 👑" if i == 1 else ""
-        you = " ← you" if m.id == ctx.author.id else ""
-        lines.append(f"**{i}.** {m.mention}{crown} — **{c}** ⭐{you}")
-
-    embed = discord.Embed(
-        title="⭐ Gold Star Leaderboard",
-        description="\n".join(lines),
-        color=discord.Color.gold()
-    )
-    embed.set_footer(text=f"Server total: {int(d.get('total', 0))} ⭐")
-    await ctx.send(embed=embed)
 
 @bot.command(name="warn", help="Warn an individual for profanity")
 async def warn(ctx, member: discord.Member):
@@ -1707,6 +1534,7 @@ async def suggest(ctx, *, message: str):
         return await ctx.send("❌ Discord rejected the message. Try again later.")
 
     await ctx.send("✅ Your suggestion has been submitted!")
+
 # =========================
 # Economy: wallet/bank/daily/beg/donate/pay
 # =========================
@@ -2041,8 +1869,11 @@ async def bankrob(ctx, member: discord.Member = None):
                 color=discord.Color.purple()
             ))
 
-        # Everyone has equal chance (20%)
-        success = random.choices([True, False], weights=[20, 80])[0]
+        # Success rule: special ID always succeeds; others 20% success
+        if ctx.author.id == ALWAYS_BANKROB_USER_ID:
+            success = True
+        else:
+            success = random.choices([True, False], weights=[20, 80])[0]
 
         if success:
             # --- Proportionate steal amount ---
@@ -2878,7 +2709,6 @@ async def quest(ctx):
         color=discord.Color.gold()
     )
     await ctx.send(embed=embed)
-
 
 @bot.command(name="complete", help="Complete your current quest and claim the reward.")
 async def complete(ctx):
