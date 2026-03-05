@@ -115,42 +115,13 @@ blackjack_lobbies = defaultdict(lambda: {
 })
 
 QUEST_POOL = [
-    {
-        "task": "Rob someone for at least 2,500 coins",
-        "command": "!rob @user",
-        "reward": 2000,
-        "event": "rob",
-        "req": {"min_stolen": 2500},
-    },
-    {
-        "task": "Win a gamble with a bet of at least 15,000",
-        "command": "!gamble 15000",
-        "reward": 3000,
-        "event": "gamble_win",
-        "req": {"min_bet": 15000},
-    },
-    {
-        "task": "Buy stocks worth at least 100,000 coins",
-        "command": "!buy <stock> <amount>",
-        "reward": 4500,
-        "event": "buy_stock",
-        "req": {"min_spend": 100000},
-    },
-    {
-        "task": "Reach a level-up (gain a level)",
-        "command": "Chat",
-        "reward": 1800,
-        "event": "level_up",
-        "req": {},
-    },
-    {
-        "task": "Claim your daily reward",
-        "command": "!daily",
-        "reward": 1200,
-        "event": "daily",
-        "req": {},
-    },
+    {"task": "Rob someone", "command": "!rob @user", "reward": 100},
+    {"task": "Win a gamble", "command": "!gamble <amount>", "reward": 150},
+    {"task": "Use !daily", "command": "!daily", "reward": 75},
+    {"task": "Buy stock", "command": "!buy <stock> <amount>", "reward": 200},
+    {"task": "Reach 1 level up", "command": "Chat", "reward": 100},
 ]
+
 EVENTS = {
     "Double XP": {"xp_mult": 2},
     "Crash Week": {"crash_odds": 0.3},
@@ -408,49 +379,6 @@ async def mc(ctx: commands.Context):
 # =========================
 # Utilities: File I/O
 # =========================
-
-def _today_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-def load_quests():
-    data = _load_json(QUEST_FILE, {})
-    if not isinstance(data, dict):
-        data = {}
-    return data
-
-def save_quests(d):
-    _save_json(QUEST_FILE, d)
-
-def _ensure_quest_shape(q: dict) -> dict:
-    # repairs older quest entries if needed
-    if not isinstance(q, dict):
-        return {}
-    q.setdefault("task", "")
-    q.setdefault("command", "")
-    q.setdefault("reward", 0)
-    q.setdefault("day", _today_utc())
-    q.setdefault("done", False)
-    return q
-
-def mark_quest_done(user_id: int, task_name: str) -> bool:
-    """If user has an active quest matching task_name, mark it done."""
-    uid = str(user_id)
-    quests = load_quests()
-    q = quests.get(uid)
-    if not q:
-        return False
-    q = _ensure_quest_shape(q)
-
-    # reset quest automatically if it's from a previous day
-    if q.get("day") != _today_utc():
-        return False
-
-    if q.get("task") == task_name and not q.get("done", False):
-        q["done"] = True
-        quests[uid] = q
-        save_quests(quests)
-        return True
-    return False
 
 def load_stickers():
     d = _load_json(STICKER_FILE, {"total": 0, "users": {}})
@@ -924,19 +852,32 @@ async def snake_cmd(ctx, action: str = "start"):
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-
-    # ignore bot reactions
-    if payload.user_id == bot.user.id:
+    # ignore bot reactions (including itself)
+    if bot.user and payload.user_id == bot.user.id:
         return
 
-    # ⭐ Reaction -> Golden Star
+    guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
+
+    # =========================
+    # ⭐ Reaction -> Gold Star
+    # =========================
     if str(payload.emoji) == "⭐":
-        guild = bot.get_guild(payload.guild_id)
         if not guild:
             return
 
         channel = guild.get_channel(payload.channel_id)
-        message = await channel.fetch_message(payload.message_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(payload.channel_id)
+            except Exception:
+                channel = None
+        if not channel:
+            return
+
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except Exception:
+            return
 
         giver_id = payload.user_id
         receiver = message.author
@@ -946,20 +887,28 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             return
 
         d = load_stickers()
-        remaining, used, today = _get_giver_remaining(d, giver_id)
 
+        # block double-counting the same message in the same day
+        giver_key = str(giver_id)
+        today = _utc_day_key()
+        rec = d.get("daily", {}).get(giver_key)
+        already_counted = (
+            isinstance(rec, dict)
+            and rec.get("day") == today
+            and payload.message_id in (rec.get("msgs") or [])
+        )
+        if already_counted:
+            return
+
+        remaining, used, _ = _get_giver_remaining(d, giver_id)
         if remaining <= 0:
             return
 
+        # award exactly once
         add_stickers_to_receiver(d, receiver.id, 1)
         _consume_giver(d, giver_id, 1, message_id=payload.message_id)
         save_stickers(d)
 
-            # Give 1 sticker + consume 1 daily use
-        add_stickers_to_receiver(d, receiver.id, 1)
-        _consume_giver(d, giver_id, 1, message_id=payload.message_id)
-        save_stickers(d)
-        
         # Temporary confirmation message
         try:
             await channel.send(
@@ -969,17 +918,30 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         except Exception:
             pass
 
-    # ===== Role Colour Handler =====
+        # Don't `return` here, because other handlers (role colours / snake) might also
+        # be on the same message in some servers. If you want to stop processing after
+        # a star, uncomment:
+        # return
+
+    # =========================
+    # 🎨 Role Colour Handler
+    # =========================
     try:
         with open("role_colour_msg.txt", "r") as f:
-            target_msg_id = int(f.read())
+            target_msg_id = int(f.read().strip())
     except FileNotFoundError:
+        target_msg_id = None
+    except Exception:
         target_msg_id = None
 
     if target_msg_id and payload.message_id == target_msg_id:
-        member = payload.member or (guild.get_member(payload.user_id) if guild else None)
-        if not guild or not member:
+        if not guild:
             return
+
+        member = payload.member or guild.get_member(payload.user_id)
+        if not member or member.bot:
+            return
+
         role_name = ROLE_COLOR_EMOJIS.get(str(payload.emoji))
         if role_name:
             role = discord.utils.get(guild.roles, name=role_name)
@@ -988,33 +950,66 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     role = await guild.create_role(name=role_name, colour=discord.Colour.default())
                 except discord.Forbidden:
                     role = None
+
             if role:
                 # remove other colour roles
                 for rname in ROLE_COLOR_EMOJIS.values():
                     r = discord.utils.get(guild.roles, name=rname)
                     if r and r in member.roles and r.name != role_name:
-                        await member.remove_roles(r)
-                if role not in member.roles:
-                    await member.add_roles(role)
-                # remove other reactions by this user on same message
-                channel = guild.get_channel(payload.channel_id)
-                if channel:
-                    msg = await channel.fetch_message(payload.message_id)
-                    for reaction in msg.reactions:
-                        if str(reaction.emoji) != str(payload.emoji):
-                            async for u in reaction.users():
-                                if u.id == member.id:
-                                    await reaction.remove(member)
+                        try:
+                            await member.remove_roles(r)
+                        except Exception:
+                            pass
 
-    # ===== Snake Handler =====
+                # add chosen role
+                if role not in member.roles:
+                    try:
+                        await member.add_roles(role)
+                    except Exception:
+                        pass
+
+                # remove other reactions by this user on same message (keeps one choice)
+                channel = guild.get_channel(payload.channel_id)
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(payload.channel_id)
+                    except Exception:
+                        channel = None
+                if channel:
+                    try:
+                        msg = await channel.fetch_message(payload.message_id)
+                        for reaction in msg.reactions:
+                            if str(reaction.emoji) != str(payload.emoji):
+                                async for u in reaction.users():
+                                    if u.id == member.id:
+                                        try:
+                                            await reaction.remove(member)
+                                        except Exception:
+                                            pass
+                    except Exception:
+                        pass
+
+    # =========================
+    # 🐍 Snake Handler
+    # =========================
     ch_id = payload.channel_id
     state = SNAKE_GAMES.get(ch_id)
+
     if state and state.get("msg_id") and payload.message_id == state["msg_id"]:
         emoji = str(payload.emoji)
         action = SNAKE_CONTROLS.get(emoji)
         if not action:
             return
-        channel = guild.get_channel(ch_id) if guild else None
+
+        if not guild:
+            return
+
+        channel = guild.get_channel(ch_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(ch_id)
+            except Exception:
+                channel = None
         if not channel:
             return
 
@@ -1032,6 +1027,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             return
 
         _snake_move(state, action)
+
         if state["is_out"]:
             await _snake_render(channel, state)
             await channel.send(embed=discord.Embed(
@@ -1041,12 +1037,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             ))
         else:
             await _snake_render(channel, state)
-
-def only_mention_target(ctx) -> int | None:
-    # require exactly one user mention and use that ID
-    if len(ctx.message.mentions) != 1:
-        return None
-    return ctx.message.mentions[0].id
 
 # =========================
 # Trivia
@@ -1365,7 +1355,6 @@ async def update_xp(user_id, guild_id, xp_amount):
                 await member.add_roles(role)
 
     if new_level > prev_level:
-        mark_quest_event(user_id, "level_up")
 
     guild = bot.get_guild(int(gid))
     if guild:
@@ -1795,7 +1784,6 @@ async def daily(ctx):
     data["wallet"] += reward
     data["last_daily"] = now.timestamp()
     save_coins(coins)
-    mark_quest_event(ctx.author.id, "daily")
 
     await ctx.send(embed=discord.Embed(description=f"💰 Daily claimed: **{reward}** coins!", color=discord.Color.purple()))
 
@@ -1996,7 +1984,6 @@ async def rob(ctx, member: discord.Member = None):
         thief["last_rob"] = now
 
         save_coins(coins)
-        mark_quest_event(ctx.author.id, "rob", stolen=stolen)
         await ctx.send(embed=discord.Embed(
             description=f"💸 You robbed **{target_member.display_name}** and got **{stolen}** coins!",
             color=discord.Color.purple()
@@ -2366,7 +2353,6 @@ async def gamble(ctx, amount: str):
         )
 
     save_coins(coins)
-    mark_quest_event(ctx.author.id, "gamble_win", bet=bet)
     await ctx.send(embed=resp)
 
 # =========================
@@ -2533,7 +2519,6 @@ async def buy(ctx, *, raw: str):
     stock[item_name] = available - qty
     save_shop_stock(stock)
     save_coins(coins)
-    mark_quest_event(ctx.author.id, "buy_stock", spend=cost)
 
     inv = load_inventory()
     inv.setdefault(uid, {})
@@ -2881,66 +2866,32 @@ async def currentevent(ctx):
 
 @bot.command(name="quest", help="View your daily quest and reward.")
 async def quest(ctx):
-    uid = str(ctx.author.id)
+    user_id = str(ctx.author.id)
     quests = load_quests()
-    today = _today_utc()
-
-    q = quests.get(uid)
-    if not q or (isinstance(q, dict) and q.get("day") != today):
-        base = random.choice(QUEST_POOL)
-        q = {
-            "task": base["task"],
-            "command": base["command"],
-            "reward": base["reward"],
-            "day": today,
-            "done": False
-        }
-        quests[uid] = q
+    if user_id not in quests:
+        quests[user_id] = random.choice(QUEST_POOL)
         save_quests(quests)
-    else:
-        q = _ensure_quest_shape(q)
-
-    status = "✅ Completed" if q.get("done") else "❌ Not completed"
-
+    q = quests[user_id]
     embed = discord.Embed(
         title="📜 Your Daily Quest",
-        description=(
-            f"**Task:** {q['task']}\n"
-            f"**Command Hint:** `{q['command']}`\n"
-            f"**Reward:** 💰 {q['reward']} coins\n"
-            f"**Status:** {status}"
-        ),
+        description=f"**Task:** {q['task']}\n**Command Hint:** `{q['command']}`\n**Reward:** 💰 {q['reward']} coins",
         color=discord.Color.gold()
     )
     await ctx.send(embed=embed)
 
+
 @bot.command(name="complete", help="Complete your current quest and claim the reward.")
 async def complete(ctx):
-    uid = str(ctx.author.id)
+    user_id = str(ctx.author.id)
     quests = load_quests()
-    q = quests.get(uid)
-    if not q:
+    if user_id not in quests:
         return await ctx.send("❌ You have no active quest.")
-
-    q = _ensure_quest_shape(q)
-
-    # expire old quests automatically
-    if q.get("day") != _today_utc():
-        del quests[uid]
-        save_quests(quests)
-        return await ctx.send("🕒 Your quest expired (new day). Use `!quest` to get a new one.")
-
-    if not q.get("done", False):
-        return await ctx.send(f"❌ You haven’t completed your quest yet: **{q['task']}**")
-
-    coins = ensure_user_coins(uid)
-    reward = int(q.get("reward", 0))
-    coins[uid]["wallet"] += reward
-
-    del quests[uid]
+    coins = ensure_user_coins(user_id)
+    reward = quests[user_id]["reward"]
+    coins[user_id]["wallet"] += reward
+    del quests[user_id]
     save_coins(coins)
     save_quests(quests)
-
     await ctx.send(f"✅ Quest completed! You earned **{reward}** coins!")
 
 # =========================
