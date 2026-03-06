@@ -84,7 +84,6 @@ PACKAGE_FILES = [
     "prayer_notif_state.json",
     "ramadan_post_state.json",
     "swear_jar.json",
-    "sticker.json",
 ]
 
 # Economy / Items
@@ -103,7 +102,6 @@ STOCKS = ["Oreobux", "QMkoin", "Seelsterling", "Fwizfinance", "BingBux"]
 STOCK_PURCHASE_COUNT = {stock: 0 for stock in STOCKS}
 
 # Blackjack (solo + placeholder for future lobbies)
-SOLO_BLACKJACK_GAMES = {}
 blackjack_lobbies = defaultdict(lambda: {
     "players": [],
     "bets": {},
@@ -377,8 +375,50 @@ async def mc(ctx: commands.Context):
     await ctx.send(embed=embed, view=view)
 
 # =========================
+# Golden Star Stickers
+# =========================
+STAR_DAILY_LIMIT = 2
+
+def _utc_day_key() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def _get_giver_remaining(d: dict, giver_id: int):
+    giver_key = str(giver_id)
+    today = _utc_day_key()
+
+    daily = d.setdefault("daily", {})
+    rec = daily.get(giver_key)
+
+    if not isinstance(rec, dict) or rec.get("day") != today:
+        rec = {"day": today, "used": 0, "msgs": []}
+        daily[giver_key] = rec
+
+    used = int(rec.get("used", 0) or 0)
+    remaining = max(0, STAR_DAILY_LIMIT - used)
+    return remaining, used, rec
+
+def _consume_giver(d: dict, giver_id: int, amount: int = 1, message_id: int = None):
+    giver_key = str(giver_id)
+    today = _utc_day_key()
+
+    daily = d.setdefault("daily", {})
+    rec = daily.get(giver_key)
+
+    if not isinstance(rec, dict) or rec.get("day") != today:
+        rec = {"day": today, "used": 0, "msgs": []}
+        daily[giver_key] = rec
+
+    rec["used"] = int(rec.get("used", 0) or 0) + amount
+
+    if message_id is not None:
+        msgs = rec.setdefault("msgs", [])
+        if message_id not in msgs:
+            msgs.append(message_id)
+
+# =========================
 # Utilities: File I/O
 # =========================
+
 def load_stickers():
     d = _load_json(STICKER_FILE, {"total": 0, "users": {}, "daily": {}})
     if not isinstance(d, dict):
@@ -593,6 +633,7 @@ def load_stocks():
             "QMkoin": {"price": 150, "history": [150]},
             "Seelsterling": {"price": 200, "history": [200]},
             "Fwizfinance": {"price": 250, "history": [250]},
+            "BingBux": {"price": 300, "history": [300]},
         }
         save_stocks(data)
         return data
@@ -604,6 +645,7 @@ def load_stocks():
         "QMkoin": {"price": 150, "history": [150]},
         "Seelsterling": {"price": 200, "history": [200]},
         "Fwizfinance": {"price": 250, "history": [250]},
+        "BingBux": {"price": 300, "history": [300]},
     }
     fixed = {}
     for key in STOCKS:
@@ -791,6 +833,55 @@ async def snake_cmd(ctx, action: str = "start"):
         return await ctx.send(embed=discord.Embed(title="Game Over", description=f"Scored: **{state['points']}**", color=discord.Color.red()))
     await _snake_render(ctx, state)
 
+def only_mention_target(ctx):
+    mentions = [m for m in ctx.message.mentions if not m.bot]
+    if len(mentions) != 1:
+        return None
+    return mentions[0].id
+
+# =========================
+# Trivia helpers
+# =========================
+def load_trivia_stats():
+    data = _load_json(TRIVIA_STATS_FILE, {})
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def save_trivia_stats(d):
+    _save_json(TRIVIA_STATS_FILE, d)
+
+
+def load_trivia_streaks():
+    data = _load_json(TRIVIA_STREAKS_FILE, {})
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def save_trivia_streaks(d):
+    _save_json(TRIVIA_STREAKS_FILE, d)
+
+
+def add_trivia_result(user_id: str, category: str, correct: bool):
+    stats = load_trivia_stats()
+
+    uid = str(user_id)
+    cat = str(category).strip().title() if category else "General"
+
+    stats.setdefault(uid, {})
+    stats[uid].setdefault(cat, {"attempts": 0, "correct": 0})
+
+    stats[uid][cat]["attempts"] = int(stats[uid][cat].get("attempts", 0)) + 1
+
+    if correct:
+        stats[uid][cat]["correct"] = int(stats[uid][cat].get("correct", 0)) + 1
+    else:
+        stats[uid][cat]["correct"] = int(stats[uid][cat].get("correct", 0))
+
+    save_trivia_stats(stats)
+
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     # ignore bot reactions (including itself)
@@ -871,8 +962,11 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
         # Temporary confirmation message
         try:
+            giver = guild.get_member(giver_id)
+            giver_name = giver.display_name if giver else "Someone"
+            
             await channel.send(
-                f"⭐ Added a star for **{receiver.display_name}**!",
+                f"⭐ **{giver_name}** gave a star to **{receiver.display_name}**!",
                 delete_after=4
             )
         except Exception:
@@ -989,8 +1083,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         else:
             await _snake_render(channel, state)
 
-import aiohttp
-
 @bot.command(name="trivia", help="Answer a trivia question with emoji reactions!")
 async def trivia(ctx):
     url = "https://the-trivia-api.com/v2/questions"
@@ -1069,6 +1161,111 @@ async def trivia(ctx):
         save_trivia_streaks(streaks)
 
         await ctx.send(f"❌ Wrong! The correct answer was **{correct}**. Streak reset.")
+
+@bot.command(name="star", help="Give a golden star sticker to someone. Usage: !star @user")
+async def star(ctx, member: discord.Member = None):
+    if member is None:
+        return await ctx.send("❌ Usage: `!star @user`")
+
+    if member == ctx.author:
+        return await ctx.send("❌ You can't give a star to yourself.")
+
+    if member.bot:
+        return await ctx.send("🤖 Bots can't receive golden stars.")
+
+    d = load_stickers()
+    remaining, used, _ = _get_giver_remaining(d, ctx.author.id)
+
+    if remaining <= 0:
+        return await ctx.send("⭐ You’ve already used your **2 stars** for today. Come back tomorrow!")
+
+    add_stickers_to_receiver(d, member.id, 1)
+    _consume_giver(d, ctx.author.id, 1)
+    save_stickers(d)
+
+    remaining_after, _, _ = _get_giver_remaining(d, ctx.author.id)
+    receiver_total = int(d["users"].get(str(member.id), {}).get("count", 0))
+    server_total = int(d.get("total", 0))
+
+    embed = discord.Embed(
+        title="⭐ Golden Star Given!",
+        description=f"{ctx.author.mention} gave a golden star to {member.mention}!",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name=f"{member.display_name}'s total", value=f"**{receiver_total}** ⭐", inline=True)
+    embed.add_field(name="Your stars left today", value=f"**{remaining_after} / {STAR_DAILY_LIMIT}**", inline=True)
+    embed.set_footer(text=f"Server total stars: {server_total}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="stars", help="Check sticker totals. Usage: !stars [@user]")
+async def stars(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    d = load_stickers()
+
+    user_total = int(d.get("users", {}).get(str(member.id), {}).get("count", 0))
+    server_total = int(d.get("total", 0))
+
+    remaining, used, _ = _get_giver_remaining(d, ctx.author.id)
+
+    embed = discord.Embed(
+        title="⭐ Golden Star Stickers",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="Server total", value=f"**{server_total}** ⭐", inline=False)
+    embed.add_field(name=f"{member.display_name}", value=f"**{user_total}** ⭐", inline=False)
+
+    if member == ctx.author:
+        embed.add_field(
+            name="Your daily giving limit",
+            value=f"Used **{used}/{STAR_DAILY_LIMIT}** • Remaining **{remaining}**",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="starleaderboard", help="Show the top golden star receivers. Usage: !starleaderboard [count]")
+async def starleaderboard(ctx, count: int = 10):
+    count = max(3, min(25, int(count)))
+
+    d = load_stickers()
+    users = d.get("users", {})
+
+    rows = []
+    for uid, rec in users.items():
+        try:
+            total = int(rec.get("count", 0))
+        except Exception:
+            total = 0
+
+        if total <= 0:
+            continue
+
+        member = ctx.guild.get_member(int(uid))
+        if not member or member.bot:
+            continue
+
+        rows.append((member, total))
+
+    if not rows:
+        return await ctx.send("⭐ No golden stars have been given yet.")
+
+    rows.sort(key=lambda x: x[1], reverse=True)
+
+    lines = []
+    for i, (member, total) in enumerate(rows[:count], start=1):
+        crown = " 👑" if i == 1 else ""
+        you = " ← you" if member.id == ctx.author.id else ""
+        lines.append(f"**{i}.** {member.mention}{crown} — **{total}** ⭐{you}")
+
+    embed = discord.Embed(
+        title="⭐ Golden Star Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=f"Server total stars: {int(d.get('total', 0))}")
+    await ctx.send(embed=embed)
 
 @bot.command(name="triviastats", help="Show how many you got right/wrong in each trivia category. Usage: !triviastats [@user]")
 async def triviastats(ctx, member: discord.Member = None):
