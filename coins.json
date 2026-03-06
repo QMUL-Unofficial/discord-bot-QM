@@ -1,86 +1,105 @@
 {
-  "421959520898514945": {
-    "wallet": 0,
-    "bank": 2916,
-    "last_daily": 0,
-    "last_rob": 0,
-    "last_bankrob": 0,
-    "portfolio": {
-      "Oreobux": 0,
-      "QMkoin": 0,
-      "Seelsterling": 0,
-      "Fwizfinance": 0,
-      "BingBux": 0
+    "421959520898514945": {
+        "wallet": 3978,
+        "bank": 0,
+        "last_daily": 1772792299.145634,
+        "last_rob": 0,
+        "last_bankrob": 1772799124.597234,
+        "portfolio": {
+            "Oreobux": 35,
+            "QMkoin": 0,
+            "Seelsterling": 0,
+            "Fwizfinance": 0,
+            "BingBux": 0
+        },
+        "last_beg": 1772792393.9453309
+    },
+    "987034674167709787": {
+        "wallet": 0,
+        "bank": 1210,
+        "last_daily": 0,
+        "last_rob": 0,
+        "last_bankrob": 1772759610.3509436,
+        "portfolio": {
+            "Oreobux": 0,
+            "QMkoin": 0,
+            "Seelsterling": 0,
+            "Fwizfinance": 0,
+            "BingBux": 0
+        }
+    },
+    "1400876118587871302": {
+        "wallet": 0,
+        "bank": 0,
+        "last_daily": 1772755977.709286,
+        "last_rob": 0,
+        "last_bankrob": 1772797660.5703018,
+        "portfolio": {
+            "Oreobux": 0,
+            "QMkoin": 0,
+            "Seelsterling": 5,
+            "Fwizfinance": 0,
+            "BingBux": 0
+        },
+        "last_beg": 1772792168.7193882
+    },
+    "1253342402606010399": {
+        "wallet": 0,
+        "bank": 4199,
+        "last_daily": 1772771741.629809,
+        "last_rob": 0,
+        "last_bankrob": 1772751267.549503,
+        "portfolio": {
+            "Oreobux": 0,
+            "QMkoin": 0,
+            "Seelsterling": 0,
+            "Fwizfinance": 0,
+            "BingBux": 0
+        },
+        "last_beg": 1772792175.5892172
+    },
+    "533391601452580874": {
+        "wallet": 62,
+        "bank": 0,
+        "last_daily": 0,
+        "last_rob": 0,
+        "last_bankrob": 1772750262.0468974,
+        "portfolio": {
+            "Oreobux": 0,
+            "QMkoin": 0,
+            "Seelsterling": 0,
+            "Fwizfinance": 0,
+            "BingBux": 0
+        }
+    },
+    "804277913833701397": {
+        "wallet": 296,
+        "bank": 0,
+        "last_daily": 1772773888.483085,
+        "last_rob": 0,
+        "last_bankrob": 1772773869.1060257,
+        "portfolio": {
+            "Oreobux": 0,
+            "QMkoin": 3,
+            "Seelsterling": 0,
+            "Fwizfinance": 0,
+            "BingBux": 0
+        },
+        "last_beg": 1772792304.0108442
+    },
+    "734468552903360594": {
+        "wallet": 0,
+        "bank": 1807,
+        "last_daily": 0,
+        "last_rob": 0,
+        "last_bankrob": 1772741936.52423,
+        "portfolio": {
+            "Oreobux": 0,
+            "QMkoin": 0,
+            "Seelsterling": 0,
+            "Fwizfinance": 0,
+            "BingBux": 0
+        },
+        "last_beg": 1772710881.5852687
     }
-  },
-  "987034674167709787": {
-    "wallet": 0,
-    "bank": 1558,
-    "last_daily": 0,
-    "last_rob": 0,
-    "last_bankrob": 0,
-    "portfolio": {
-      "Oreobux": 0,
-      "QMkoin": 0,
-      "Seelsterling": 0,
-      "Fwizfinance": 0,
-      "BingBux": 0
-    }
-  },
-  "1400876118587871302": {
-    "wallet": 0,
-    "bank": 822,
-    "last_daily": 0,
-    "last_rob": 0,
-    "last_bankrob": 0,
-    "portfolio": {
-      "Oreobux": 0,
-      "QMkoin": 0,
-      "Seelsterling": 0,
-      "Fwizfinance": 0,
-      "BingBux": 0
-    }
-  },
-  "1253342402606010399": {
-    "wallet": 0,
-    "bank": 441,
-    "last_daily": 0,
-    "last_rob": 0,
-    "last_bankrob": 0,
-    "portfolio": {
-      "Oreobux": 0,
-      "QMkoin": 0,
-      "Seelsterling": 0,
-      "Fwizfinance": 0,
-      "BingBux": 0
-    }
-  },
-  "533391601452580874": {
-    "wallet": 183,
-    "bank": 0,
-    "last_daily": 0,
-    "last_rob": 0,
-    "last_bankrob": 0,
-    "portfolio": {
-      "Oreobux": 0,
-      "QMkoin": 0,
-      "Seelsterling": 0,
-      "Fwizfinance": 0,
-      "BingBux": 0
-    }
-  },
-  "804277913833701397": {
-    "wallet": 0,
-    "bank": 6,
-    "last_daily": 0,
-    "last_rob": 0,
-    "last_bankrob": 0,
-    "portfolio": {
-      "Oreobux": 0,
-      "QMkoin": 0,
-      "Seelsterling": 0,
-      "Fwizfinance": 0,
-      "BingBux": 0
-    }
-  }
 }
